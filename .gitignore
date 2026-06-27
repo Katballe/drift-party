@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.wrangler/
+.wrangler-dryrun/
+.dev.vars
+*.log
+.DS_Store
+.reference/
+.claude/

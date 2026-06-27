@@ -1,0 +1,25 @@
+{
+  "name": "drift-party",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Drift Party — local/online multiplayer arcade racing. Phone = wireless gamepad, big screen = the race. Cloudflare Worker + Durable Object relay.",
+  "scripts": {
+    "build": "vite build",
+    "dev:client": "vite",
+    "dev": "vite build && wrangler dev",
+    "deploy": "vite build && wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "@types/node": "^26.0.1",
+    "@types/qrcode": "^1.5.6",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "wrangler": "^4.85.0"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

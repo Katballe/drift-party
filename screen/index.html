@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Drift Party — Screen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #1a2a0a; overflow: hidden; font-family: 'Caveat', cursive; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes popIn { 0% { transform: scale(0.35); opacity: 0; } 65% { transform: scale(1.1); } 100% { transform: scale(1); opacity: 1; } }
+    button:hover { filter: brightness(1.08); }
+    button:active { filter: brightness(0.9); }
+  </style>
+</head>
+<body>
+  <div id="root" style="width:100vw;height:100vh;background:#1a2a0a;position:relative;overflow:hidden;font-family:'Caveat',cursive">
+    <canvas id="raceCanvas" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:block"></canvas>
+    <div id="lobby"></div>
+    <div id="countdown"></div>
+    <div id="hud"></div>
+    <div id="results"></div>
+  </div>
+  <script type="module" src="/src/screen/main.ts"></script>
+</body>
+</html>
