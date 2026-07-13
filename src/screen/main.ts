@@ -1,5 +1,6 @@
 import QRCode from "qrcode";
 import { Net } from "../shared/net";
+import { INK, hashStr, inkShape, makePaper, paintGrass, roughPath, rng, sampleEllipse, sampleRoundRect, type Pt } from "./sketch";
 import {
   ALL_SLOTS,
   makeRoomCode,
@@ -9,7 +10,7 @@ import {
 } from "../shared/protocol";
 
 // ─── Types ────────────────────────────────────────────────────────────────
-type Mode = "keyboard" | "ai" | "controller";
+type Mode = "ai" | "controller";
 
 interface Player {
   id: PlayerId;
@@ -45,7 +46,7 @@ interface ResultRow {
 }
 
 const DEFAULTS: Record<PlayerId, Player> = {
-  p1: { id: "p1", name: "Player 1", carType: "rc",     color: "#E63946", ready: false, mode: "keyboard" },
+  p1: { id: "p1", name: "Player 1", carType: "rc",     color: "#E63946", ready: true,  mode: "ai" },
   p2: { id: "p2", name: "Blue Bus", carType: "bus",    color: "#2196F3", ready: true,  mode: "ai" },
   p3: { id: "p3", name: "Green RC", carType: "rc",     color: "#4CAF50", ready: true,  mode: "ai" },
   p4: { id: "p4", name: "Orange",   carType: "normal", color: "#FF9800", ready: true,  mode: "ai" },
@@ -85,10 +86,10 @@ class DriftScreen {
   raceTime = 0; totalLaps = 3;
   ts = 0; raf = 0;
   net: Net | null = null;
-  keys: Record<string, boolean> = {};
   CPs: { x: number; y: number; r: number }[] = [];
   WPs: { x: number; y: number }[] = [];
   offscr: HTMLCanvasElement | null = null;
+  paper: HTMLCanvasElement | null = null;
   finCount = 0; lastStT = 0; lastHUDT = 0;
   qrDataUrl = "";
 
@@ -98,10 +99,14 @@ class DriftScreen {
 
   // Audio
   sndCtx: AudioContext | null = null;
-  engNode: OscillatorNode | null = null;
-  engGain: GainNode | null = null;
+  musicGain: GainNode | null = null;
   driftGain: GainNode | null = null;
   driftNoise: AudioBufferSourceNode | null = null;
+  snareNoiseBuf: AudioBuffer | null = null;
+  hatNoiseBuf: AudioBuffer | null = null;
+  nextBeatTime = 0;
+  musicPlaying = false;
+  musicTimeout: number | null = null;
 
   mount() {
     this.canvas = document.getElementById("raceCanvas") as HTMLCanvasElement;
@@ -124,9 +129,9 @@ class DriftScreen {
     }
     this.resize();
     window.addEventListener("resize", () => this.resize());
+    this.paper = makePaper(this.CW, this.CH);
     this.buildCPs(); this.buildWPs(); this.prebake();
     this.initNet();
-    this.initKeys();
     document.getElementById("root")!.addEventListener("click", (e) => this.onClick(e));
     this.ts = performance.now();
     this.raf = requestAnimationFrame((t) => this.loop(t));
@@ -153,9 +158,9 @@ class DriftScreen {
   // ─── Track geometry ───────────────────────────────────────────────────────
   buildCPs() {
     if (this.state.selectedTrack === "f8") { this.buildF8CPs(); return; }
-    this.CPs = Array.from({ length: 8 }, (_, i) => {
-      const a = -Math.PI / 2 + (i / 8) * Math.PI * 2;
-      return { x: 800 + 500 * Math.cos(a), y: 450 + 240 * Math.sin(a), r: 85 };
+    this.CPs = Array.from({ length: 6 }, (_, i) => {
+      const a = -Math.PI / 2 + (i / 6) * Math.PI * 2;
+      return { x: 800 + 500 * Math.cos(a), y: 450 + 240 * Math.sin(a), r: 90 };
     });
   }
   buildWPs() {
@@ -167,8 +172,8 @@ class DriftScreen {
   }
   buildF8CPs() {
     const { L, R } = this.F8; const pts: { x: number; y: number; r: number }[] = [];
-    for (let i = 0; i < 8; i++) { const a = Math.PI + (i / 8) * Math.PI * 2; pts.push({ x: R.cx + R.oRX * 0.72 * Math.cos(a), y: R.cy + R.oRY * 0.72 * Math.sin(a), r: 95 }); }
-    for (let i = 0; i < 8; i++) { const a = -(i / 8) * Math.PI * 2; pts.push({ x: L.cx + L.oRX * 0.72 * Math.cos(a), y: L.cy + L.oRY * 0.72 * Math.sin(a), r: 95 }); }
+    for (let i = 0; i < 3; i++) { const a = Math.PI + (i / 3) * Math.PI * 2; pts.push({ x: R.cx + R.oRX * 0.72 * Math.cos(a), y: R.cy + R.oRY * 0.72 * Math.sin(a), r: 110 }); }
+    for (let i = 0; i < 3; i++) { const a = -(i / 3) * Math.PI * 2; pts.push({ x: L.cx + L.oRX * 0.72 * Math.cos(a), y: L.cy + L.oRY * 0.72 * Math.sin(a), r: 110 }); }
     this.CPs = pts;
   }
   buildF8WPs() {
@@ -328,13 +333,12 @@ class DriftScreen {
     const dt = Math.min((t - this.ts) / 1000, 0.05); this.ts = t;
     if (this.state.gameState === "RACING") {
       this.raceTime += dt;
-      this.applyKeys();
       this.cars.forEach((car) => { if (car.isAI && !car.isFinished) this.aiUpd(car); });
       this.cars.forEach((car) => {
         if (!car.isFinished) this.physUpd(car, dt);
         else {
           const fr = Math.pow(0.94, dt * 60);
-          car.vx *= fr; car.vy *= fr; car.x += car.vx * dt; car.y += car.vy * dt; this.clamp(car);
+          car.vx *= fr; car.vy *= fr; car.x += car.vx * dt; car.y += car.vy * dt;
         }
       });
       this.resolveColls();
@@ -350,21 +354,6 @@ class DriftScreen {
     this.updateSound();
     this.doRender();
     this.raf = requestAnimationFrame((tt) => this.loop(tt));
-  }
-
-  applyKeys() {
-    const p1 = this.playerById("p1");
-    const car = this.cars.find((c) => c.id === "p1");
-    if (!car || p1.mode !== "keyboard") return;
-    car.input.left     = !!(this.keys.ArrowLeft  || this.keys.KeyA);
-    car.input.right    = !!(this.keys.ArrowRight || this.keys.KeyD);
-    car.input.throttle = !!(this.keys.ArrowUp    || this.keys.KeyW);
-    car.input.brake    = !!(this.keys.ArrowDown  || this.keys.KeyS || this.keys.Space);
-  }
-
-  initKeys() {
-    window.addEventListener("keydown", (e) => { this.keys[e.code] = true; });
-    window.addEventListener("keyup", (e) => { this.keys[e.code] = false; });
   }
 
   bcastStatus() {
@@ -427,7 +416,6 @@ class DriftScreen {
     } else if (wasDrift && !car.isDrifting && car.activeDrift > 1) {
       car.driftScore += Math.round(car.activeDrift); car.activeDrift = 0;
     }
-    this.clamp(car);
   }
 
   clamp(car: Car) {
@@ -554,25 +542,27 @@ class DriftScreen {
     const ctx = this.ctx;
     if (this.offscr) ctx.drawImage(this.offscr, 0, 0);
     else { ctx.fillStyle = "#1a2a0a"; ctx.fillRect(0, 0, this.CW, this.CH); }
-    if (this.state.gameState === "LOBBY" || !this.cars.length) return;
-    this.cars.forEach((car) => {
-      car.trail.forEach((t) => {
-        ctx.beginPath(); ctx.arc(t.x, t.y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = car.color + Math.round(t.alpha * 255).toString(16).padStart(2, "0");
-        ctx.fill();
+    if (this.state.gameState !== "LOBBY" && this.cars.length) {
+      this.cars.forEach((car) => {
+        car.trail.forEach((t) => {
+          ctx.beginPath(); ctx.arc(t.x, t.y, 4, 0, Math.PI * 2);
+          ctx.fillStyle = car.color + Math.round(t.alpha * 160).toString(16).padStart(2, "0");
+          ctx.fill();
+        });
       });
-    });
-    [...this.cars].sort((a, b) => a.y - b.y).forEach((c) => this.drawCar(ctx, c));
-    this.cars.forEach((car) => {
-      if (car.isDrifting && car.activeDrift > 3) {
-        const sc = "+" + Math.floor(car.activeDrift);
-        const sz = Math.min(18 + car.activeDrift * 0.5, 30);
-        ctx.font = `700 ${sz}px 'Caveat',cursive`; ctx.textAlign = "center";
-        ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3;
-        ctx.strokeText(sc, car.x, car.y - car.cfg.h / 2 - 22);
-        ctx.fillStyle = "#FFD600"; ctx.fillText(sc, car.x, car.y - car.cfg.h / 2 - 22);
-      }
-    });
+      [...this.cars].sort((a, b) => a.y - b.y).forEach((c) => this.drawCar(ctx, c));
+      this.cars.forEach((car) => {
+        if (car.isDrifting && car.activeDrift > 3) {
+          const sc = "+" + Math.floor(car.activeDrift);
+          const sz = Math.min(18 + car.activeDrift * 0.5, 30);
+          ctx.font = `700 ${sz}px 'Caveat',cursive`; ctx.textAlign = "center";
+          ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3;
+          ctx.strokeText(sc, car.x, car.y - car.cfg.h / 2 - 22);
+          ctx.fillStyle = "#FFD600"; ctx.fillText(sc, car.x, car.y - car.cfg.h / 2 - 22);
+        }
+      });
+    }
+    if (this.paper) ctx.drawImage(this.paper, 0, 0);
   }
 
   drawTrackF8(ctx: CanvasRenderingContext2D) {
@@ -620,48 +610,103 @@ class DriftScreen {
 
   drawTrack(ctx: CanvasRenderingContext2D) {
     const { cx, cy, oRX, oRY, iRX, iRY } = this.T;
-    ctx.fillStyle = "#5D8A3C"; ctx.fillRect(0, 0, this.CW, this.CH);
-    ctx.beginPath(); ctx.ellipse(cx, cy, oRX, oRY, 0, 0, Math.PI * 2); ctx.fillStyle = "#D2C9A8"; ctx.fill();
-    ctx.beginPath(); ctx.ellipse(cx, cy, iRX, iRY, 0, 0, Math.PI * 2); ctx.fillStyle = "#4A7A2F"; ctx.fill();
-    ctx.save(); ctx.setLineDash([16, 12]);
-    ctx.beginPath(); ctx.ellipse(cx, cy, 500, 240, 0, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.3)"; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
-    ctx.beginPath(); ctx.ellipse(cx, cy, oRX, oRY, 0, 0, Math.PI * 2); ctx.strokeStyle = "#2d2d2d"; ctx.lineWidth = 5; ctx.stroke();
-    ctx.beginPath(); ctx.ellipse(cx, cy, iRX, iRY, 0, 0, Math.PI * 2); ctx.strokeStyle = "#2d2d2d"; ctx.lineWidth = 5; ctx.stroke();
-    for (let i = 0; i < 32; i++) if (i % 2 === 0) { const a = (i + 0.5) / 32 * Math.PI * 2; ctx.beginPath(); ctx.arc(cx + (oRX - 10) * Math.cos(a), cy + (oRY - 10) * Math.sin(a), 8, 0, Math.PI * 2); ctx.fillStyle = "#C62828"; ctx.fill(); }
-    for (let i = 0; i < 28; i++) if (i % 2 === 0) { const a = (i + 0.5) / 28 * Math.PI * 2; ctx.beginPath(); ctx.arc(cx + (iRX + 10) * Math.cos(a), cy + (iRY + 10) * Math.sin(a), 6, 0, Math.PI * 2); ctx.fillStyle = "#C62828"; ctx.fill(); }
-    const sfX = cx, sfY1 = cy - oRY + 5, sfY2 = cy - iRY - 5, bz = 16, nr = Math.floor((sfY2 - sfY1) / bz);
-    for (let r = 0; r < nr; r++) for (let col = 0; col < 2; col++) {
-      ctx.fillStyle = (r + col) % 2 === 0 ? "#fff" : "#111";
-      ctx.fillRect(sfX - bz + col * bz, sfY1 + r * bz, bz, bz);
+    paintGrass(ctx, this.CW, this.CH, "#5e9a39", "#3f6f26", "#7cb84a");
+    const outer = sampleEllipse(cx, cy, oRX, oRY, 84);
+    const inner = sampleEllipse(cx, cy, iRX, iRY, 64);
+    // sand surface, then re-cut the infield back to grass
+    inkShape(ctx, outer, 5, 7001, "#d7c393", INK, 0);
+    inkShape(ctx, inner, 4, 7002, "#5e9a39", INK, 0);
+    // sand speckle within the band
+    const r = rng(53); ctx.fillStyle = "rgba(120,96,54,0.18)";
+    for (let i = 0; i < 260; i++) {
+      const a = r() * Math.PI * 2, t = 0.1 + r() * 0.8;
+      const x = cx + (iRX + (oRX - iRX) * t) * Math.cos(a), y = cy + (iRY + (oRY - iRY) * t) * Math.sin(a);
+      ctx.beginPath(); ctx.arc(x, y, 1 + r() * 2, 0, Math.PI * 2); ctx.fill();
     }
-    ctx.font = "bold 20px Caveat,cursive"; ctx.textAlign = "center";
-    ctx.fillStyle = "rgba(255,255,255,0.28)"; ctx.fillText("OVAL CIRCUIT", cx, cy + 10);
+    // racing line — wobbly dashed mid ellipse
+    ctx.save(); ctx.setLineDash([18, 16]);
+    roughPath(ctx, sampleEllipse(cx, cy, (oRX + iRX) / 2, (oRY + iRY) / 2, 72), 3, rng(7100));
+    ctx.strokeStyle = "rgba(255,248,214,0.5)"; ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
+    // rumble strips — hand-inked blocks along outer & inner edges
+    this.rumble(ctx, cx, cy, oRX - 12, oRY - 12, 34);
+    this.rumble(ctx, cx, cy, iRX + 12, iRY + 12, 26);
+    // ink the track edges
+    inkShape(ctx, outer, 5, 7001, null, INK, 7);
+    inkShape(ctx, inner, 4, 7002, null, INK, 6);
+    // start/finish — inked checker across the top straight
+    this.checker(ctx, cx, cy - oRY + 6, cy - iRY - 6, 18);
+    ctx.font = "700 30px 'Caveat',cursive"; ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(30,40,15,0.30)"; ctx.fillText("Oval Circuit", cx, cy + 12);
+  }
+
+  rumble(ctx: CanvasRenderingContext2D, cx: number, cy: number, rx: number, ry: number, n: number) {
+    for (let i = 0; i < n; i += 2) {
+      const a = (i + 0.5) / n * Math.PI * 2;
+      const x = cx + rx * Math.cos(a), y = cy + ry * Math.sin(a);
+      inkShape(ctx, sampleRoundRect(x - 7, y - 6, 14, 12, 3, 5), 1.2, 800 + i, "#cf3b34", INK, 1.5);
+    }
+  }
+
+  checker(ctx: CanvasRenderingContext2D, x: number, y1: number, y2: number, bz: number) {
+    const nr = Math.max(1, Math.floor((y2 - y1) / bz));
+    const r = rng(42);
+    for (let row = 0; row < nr; row++) for (let col = 0; col < 2; col++) {
+      const jx = (r() * 2 - 1) * 1.5, jy = (r() * 2 - 1) * 1.5;
+      ctx.fillStyle = (row + col) % 2 === 0 ? "#f4efe2" : INK;
+      ctx.fillRect(x - bz + col * bz + jx, y1 + row * bz + jy, bz, bz);
+    }
+    inkShape(ctx, sampleRoundRect(x - bz - 1, y1 - 1, bz * 2 + 2, nr * bz + 2, 1, 6), 0.8, 77, null, INK, 1.5);
   }
 
   drawCar(ctx: CanvasRenderingContext2D, car: Car) {
-    const { w, h } = car.cfg;
+    const { w, h } = car.cfg; const type = car.cfg.type;
+    const seed = hashStr(car.id);
+    const r = type === "rc" ? 5 : 6;
     ctx.save(); ctx.translate(car.x, car.y); ctx.rotate(car.angle);
-    ctx.save(); ctx.translate(3, 4);
-    ctx.fillStyle = "rgba(0,0,0,0.28)"; ctx.beginPath(); (ctx as any).roundRect(-w / 2, -h / 2, w, h, 3); ctx.fill(); ctx.restore();
-    ctx.fillStyle = car.color; ctx.beginPath(); (ctx as any).roundRect(-w / 2, -h / 2, w, h, 3); ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.4)"; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.fillStyle = "rgba(180,220,255,0.72)"; ctx.fillRect(w * 0.10, -h * 0.34, w * 0.28, h * 0.68);
-    ctx.fillStyle = "rgba(0,0,0,0.16)"; ctx.fillRect(-w * 0.16, -h * 0.25, w * 0.36, h * 0.5);
-    ctx.fillStyle = "#1a1a1a";
-    for (const [wx, wy] of [[w * .27, h * .44], [w * .27, -h * .44], [-w * .30, h * .44], [-w * .30, -h * .44]]) {
-      ctx.beginPath(); ctx.ellipse(wx, wy, w * .12, h * .22, 0, 0, Math.PI * 2); ctx.fill();
+    // soft drop shadow
+    ctx.save(); ctx.translate(3, 4); ctx.globalAlpha = 0.2;
+    inkShape(ctx, sampleRoundRect(-w / 2, -h / 2, w, h, Math.min(6, h * 0.4)), 1, seed + 8, "#000", INK, 0);
+    ctx.globalAlpha = 1; ctx.restore();
+    // wheels
+    const wheels: Pt[] = [[w * 0.28, h * 0.46], [w * 0.28, -h * 0.46], [-w * 0.32, h * 0.46], [-w * 0.32, -h * 0.46]];
+    for (const [wx, wy] of wheels) inkShape(ctx, sampleRoundRect(wx - w * 0.1, wy - h * 0.16, w * 0.2, h * 0.32, 2), 0.7, seed + 3, INK, INK, 0);
+    // body
+    inkShape(ctx, sampleRoundRect(-w / 2, -h / 2, w, h, r), 1.3, seed + 1, car.color, INK, Math.max(2.2, w * 0.1));
+    // cel shadow on the lower half
+    ctx.save(); ctx.globalAlpha = 0.16; ctx.fillStyle = "#000";
+    roughPath(ctx, sampleRoundRect(-w / 2 + 1, h * 0.02, w - 2, h * 0.46, r * 0.6), 0.8, rng(seed + 4)); ctx.fill();
+    ctx.restore();
+    // top highlight
+    ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = Math.max(1.5, w * 0.05); ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(-w * 0.34, -h * 0.32); ctx.lineTo(w * 0.28, -h * 0.32); ctx.stroke();
+    // windows
+    const win = "rgba(196,228,242,0.92)";
+    if (type === "bus") {
+      for (const wx of [w * 0.2, -w * 0.02, -w * 0.24]) inkShape(ctx, sampleRoundRect(wx - w * 0.07, -h * 0.3, w * 0.14, h * 0.6, 2), 0.5, seed + 5, win, INK, 1.2);
+    } else {
+      inkShape(ctx, sampleRoundRect(w * 0.03, -h * 0.32, w * 0.27, h * 0.64, 2), 0.6, seed + 5, win, INK, 1.2);
     }
+    // headlights (front = +x)
+    ctx.fillStyle = "#ffe9a8";
+    for (const wy of [h * 0.28, -h * 0.28]) { ctx.beginPath(); ctx.arc(w * 0.46, wy, Math.max(1.4, w * 0.05), 0, Math.PI * 2); ctx.fill(); }
+    // RC antenna
+    if (type === "rc") {
+      ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(-w * 0.5, 0); ctx.lineTo(-w * 0.78, -h * 0.6); ctx.stroke();
+      ctx.fillStyle = "#FFD600"; ctx.beginPath(); ctx.arc(-w * 0.78, -h * 0.6, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    // drift smoke
     if (car.isDrifting && car.speed > 50) {
-      ctx.globalAlpha = 0.22 + Math.random() * 0.1; ctx.fillStyle = "#ccc";
-      for (const wy of [h * .42, -h * .42]) { ctx.beginPath(); ctx.arc(-w * .4 + (Math.random() - .5) * 8, wy, 3 + Math.random() * 4, 0, Math.PI * 2); ctx.fill(); }
+      ctx.globalAlpha = 0.22 + Math.random() * 0.1; ctx.fillStyle = "#e8e8e8";
+      for (const wy of [h * 0.42, -h * 0.42]) { ctx.beginPath(); ctx.arc(-w * 0.4 + (Math.random() - 0.5) * 8, wy, 3 + Math.random() * 4, 0, Math.PI * 2); ctx.fill(); }
       ctx.globalAlpha = 1;
     }
     ctx.restore();
-    ctx.font = `700 14px 'Caveat',cursive`; ctx.textAlign = "center";
-    ctx.strokeStyle = "rgba(0,0,0,0.9)"; ctx.lineWidth = 2.5;
+    // name
+    ctx.font = "700 15px 'Caveat',cursive"; ctx.textAlign = "center";
+    ctx.strokeStyle = "rgba(0,0,0,0.9)"; ctx.lineWidth = 3;
     ctx.strokeText(car.name, car.x, car.y - h / 2 - 9);
-    ctx.fillStyle = car.color; ctx.fillText(car.name, car.x, car.y - h / 2 - 9);
+    ctx.fillStyle = "#fff"; ctx.fillText(car.name, car.x, car.y - h / 2 - 9);
   }
 
   // ─── Audio ────────────────────────────────────────────────────────────────
@@ -669,43 +714,132 @@ class DriftScreen {
     if (this.sndCtx) return;
     try {
       this.sndCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      this.engNode = this.sndCtx.createOscillator();
-      this.engNode.type = "sawtooth"; this.engNode.frequency.value = 80;
-      const distCrv = new Float32Array(256);
-      for (let i = 0; i < 256; i++) { const x = (i * 2) / 256 - 1; distCrv[i] = Math.tanh(x * 3); }
-      const dist = this.sndCtx.createWaveShaper(); dist.curve = distCrv;
-      this.engGain = this.sndCtx.createGain(); this.engGain.gain.value = 0;
-      this.engNode.connect(dist); dist.connect(this.engGain); this.engGain.connect(this.sndCtx.destination);
-      this.engNode.start();
-      const bufSz = this.sndCtx.sampleRate * 2;
-      const buf = this.sndCtx.createBuffer(1, bufSz, this.sndCtx.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < bufSz; i++) d[i] = Math.random() * 2 - 1;
-      this.driftNoise = this.sndCtx.createBufferSource(); this.driftNoise.buffer = buf; this.driftNoise.loop = true;
-      const bpf = this.sndCtx.createBiquadFilter(); bpf.type = "bandpass"; bpf.frequency.value = 1800; bpf.Q.value = 2;
-      this.driftGain = this.sndCtx.createGain(); this.driftGain.gain.value = 0;
-      this.driftNoise.connect(bpf); bpf.connect(this.driftGain); this.driftGain.connect(this.sndCtx.destination);
+      const ctx = this.sndCtx;
+
+      // Music bus: oscillators → musicGain → compressor → output
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = -12; comp.ratio.value = 4;
+      comp.attack.value = 0.003; comp.release.value = 0.1;
+      comp.connect(ctx.destination);
+      this.musicGain = ctx.createGain(); this.musicGain.gain.value = 0;
+      this.musicGain.connect(comp);
+
+      // Pre-bake small noise buffers reused by every snare / hi-hat hit
+      const makeBuf = (dur: number) => {
+        const sz = Math.floor(ctx.sampleRate * dur);
+        const b = ctx.createBuffer(1, sz, ctx.sampleRate);
+        const d = b.getChannelData(0);
+        for (let i = 0; i < sz; i++) d[i] = Math.random() * 2 - 1;
+        return b;
+      };
+      this.snareNoiseBuf = makeBuf(0.15);
+      this.hatNoiseBuf   = makeBuf(0.05);
+
+      // Drift squeal: bandpassed noise gated by drift state (separate from music bus)
+      const driftBuf = makeBuf(2.0);
+      this.driftNoise = ctx.createBufferSource();
+      this.driftNoise.buffer = driftBuf; this.driftNoise.loop = true;
+      const bpf = ctx.createBiquadFilter(); bpf.type = "bandpass"; bpf.frequency.value = 1600; bpf.Q.value = 3;
+      this.driftGain = ctx.createGain(); this.driftGain.gain.value = 0;
+      this.driftNoise.connect(bpf); bpf.connect(this.driftGain); this.driftGain.connect(ctx.destination);
       this.driftNoise.start();
     } catch (e) { console.warn("Audio init failed", e); }
   }
 
-  updateSound() {
-    if (!this.sndCtx || !this.engGain || this.state.gameState !== "RACING") {
-      if (this.engGain && this.sndCtx) this.engGain.gain.setTargetAtTime(0, this.sndCtx.currentTime, 0.1);
-      if (this.driftGain && this.sndCtx) this.driftGain.gain.setTargetAtTime(0, this.sndCtx.currentTime, 0.1);
-      return;
+  // Lookahead chiptune scheduler — schedules 16-step (2-bar) chunks ~0.5 s ahead.
+  // Melody: square wave, C major. Bass: triangle. Kick: sine sweep. Snare+hat: noise.
+  scheduleMusicChunk() {
+    const ctx = this.sndCtx!; const mg = this.musicGain!;
+    // semitones from C4 (261.63 Hz); -1 = rest
+    const MELODY  = [7,4,7,9,12,9,7,4,  2,5,9,5,4,2,4,7];
+    const BASS_ST = [0,-1,-1,-1, 7,-1,-1,-1, 5,-1,-1,-1, 7,-1,-1,-1];
+    const KICK_ST = [1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0];
+    const SNARE_ST= [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0];
+    const HAT_ST  = [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0];
+    const S = 60 / 130 / 2; // 8th-note duration at 130 BPM
+
+    for (let i = 0; i < 16; i++) {
+      const t = this.nextBeatTime + i * S;
+
+      // Melody — square wave, short envelope
+      { const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.value = 261.63 * Math.pow(2, MELODY[i] / 12);
+        g.gain.setValueAtTime(0.06, t); g.gain.exponentialRampToValueAtTime(0.001, t + S * 0.72);
+        osc.connect(g); g.connect(mg); osc.start(t); osc.stop(t + S); }
+
+      // Bass — triangle, long sustain, fires every 4 steps
+      if (BASS_ST[i] >= 0) {
+        const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.type = "triangle";
+        osc.frequency.value = 130.81 * Math.pow(2, BASS_ST[i] / 12);
+        g.gain.setValueAtTime(0.13, t); g.gain.exponentialRampToValueAtTime(0.001, t + S * 3.6);
+        osc.connect(g); g.connect(mg); osc.start(t); osc.stop(t + S * 4);
+      }
+
+      // Kick — sine freq sweep 110 → 35 Hz
+      if (KICK_ST[i]) {
+        const osc = ctx.createOscillator(); const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(110, t); osc.frequency.exponentialRampToValueAtTime(35, t + 0.15);
+        g.gain.setValueAtTime(0.45, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+        osc.connect(g); g.connect(mg); osc.start(t); osc.stop(t + 0.26);
+      }
+
+      // Snare — high-passed pre-baked noise burst
+      if (SNARE_ST[i] && this.snareNoiseBuf) {
+        const src = ctx.createBufferSource(); src.buffer = this.snareNoiseBuf;
+        const hpf = ctx.createBiquadFilter(); hpf.type = "highpass"; hpf.frequency.value = 1200;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.18, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+        src.connect(hpf); hpf.connect(g); g.connect(mg); src.start(t); src.stop(t + 0.12);
+      }
+
+      // Hi-hat — ultra-high-passed noise, very quiet
+      if (HAT_ST[i] && this.hatNoiseBuf) {
+        const src = ctx.createBufferSource(); src.buffer = this.hatNoiseBuf;
+        const hpf = ctx.createBiquadFilter(); hpf.type = "highpass"; hpf.frequency.value = 7000;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.032, t); g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+        src.connect(hpf); hpf.connect(g); g.connect(mg); src.start(t); src.stop(t + 0.05);
+      }
     }
-    const p1 = this.cars.find((c) => c.id === "p1") || this.cars[0];
-    if (!p1) return;
-    const spd = p1.speed;
-    const freq = 60 + spd * 0.7 + (p1.input && p1.input.throttle ? 40 : 0);
-    this.engNode!.frequency.setTargetAtTime(Math.min(freq, 280), this.sndCtx.currentTime, 0.08);
-    const vol = p1.isFinished ? 0 : 0.06 + Math.min(spd / 300, 1) * 0.09;
-    this.engGain.gain.setTargetAtTime(vol, this.sndCtx.currentTime, 0.05);
-    const anyDrift = this.cars.some((c) => c.isDrifting && c.speed > 50);
-    this.driftGain!.gain.setTargetAtTime(anyDrift ? 0.18 : 0, this.sndCtx.currentTime, 0.06);
+    this.nextBeatTime += 16 * S;
   }
 
+  schedulerTick() {
+    if (!this.sndCtx || !this.musicPlaying) return;
+    while (this.nextBeatTime < this.sndCtx.currentTime + 0.5) this.scheduleMusicChunk();
+    this.musicTimeout = window.setTimeout(() => this.schedulerTick(), 100);
+  }
+
+  startMusic() {
+    if (this.musicPlaying || !this.sndCtx || !this.musicGain) return;
+    this.musicPlaying = true;
+    this.musicGain.gain.setTargetAtTime(0.8, this.sndCtx.currentTime, 0.3);
+    this.nextBeatTime = this.sndCtx.currentTime + 0.1;
+    this.schedulerTick();
+  }
+
+  stopMusic() {
+    this.musicPlaying = false;
+    if (this.musicTimeout !== null) { clearTimeout(this.musicTimeout); this.musicTimeout = null; }
+    if (this.sndCtx && this.musicGain) this.musicGain.gain.setTargetAtTime(0, this.sndCtx.currentTime, 0.25);
+  }
+
+  updateSound() {
+    if (!this.sndCtx) return;
+    if (this.state.gameState === "RACING") {
+      if (!this.musicPlaying) this.startMusic();
+      const anyDrift = this.cars.some((c) => c.isDrifting && c.speed > 50);
+      if (this.driftGain) this.driftGain.gain.setTargetAtTime(anyDrift ? 0.14 : 0, this.sndCtx.currentTime, 0.07);
+    } else {
+      if (this.musicPlaying) this.stopMusic();
+      if (this.driftGain) this.driftGain.gain.setTargetAtTime(0, this.sndCtx.currentTime, 0.1);
+    }
+  }
+
+  // Beeps go direct to destination so stopMusic() doesn't mute them
   beep(freq: number, dur: number, vol?: number, delay?: number) {
     if (!this.sndCtx) return;
     const t = this.sndCtx.currentTime + (delay || 0);
@@ -736,8 +870,6 @@ class DriftScreen {
     const a = el.dataset.action!;
     if (a === "setLaps") this.setState({ selectedLaps: Number(el.dataset.laps) });
     else if (a === "setTrack") this.setState({ selectedTrack: el.dataset.track as "oval" | "f8" });
-    else if (a === "setCar") { const p = this.playerById(el.dataset.player as PlayerId); p.carType = el.dataset.car as CarType; this.renderUI(); }
-    else if (a === "toggleReady") { const p = this.playerById("p1"); p.ready = !p.ready; this.renderUI(); }
     else if (a === "start") { if (this.canStart()) this.startCountdown(); }
     else if (a === "openController") window.open(this.controllerUrl(this.state.roomCode), "_blank");
     else if (a === "lobby") this.returnToLobby();
@@ -772,16 +904,15 @@ class DriftScreen {
       return `<button data-action="setTrack" data-track="${tr.id}" style="flex:1;padding:7px 6px;border:2px solid ${on ? "#1a2a0a" : "#ddd"};background:${on ? "#1a2a0a" : "#fff"};color:${on ? "#FFD600" : "#555"};border-radius:7px;font-size:13px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;line-height:1.3;text-align:center">${tr.label}</button>`;
     }).join("");
     const players = s.players.map((p, i) => {
-      const editable = p.mode === "keyboard";
       const cars = (["bus", "rc", "normal"] as CarType[]).map((t) => {
         const on = p.carType === t;
         const lbl = t === "bus" ? "Bus" : t === "rc" ? "RC" : "Normal";
-        return `<button ${editable ? `data-action="setCar" data-player="${p.id}" data-car="${t}"` : ""} style="padding:3px 9px;border:2px solid ${on ? p.color : "#ddd"};background:${on ? p.color : "#fff"};color:${on ? "#fff" : "#888"};border-radius:12px;font-size:12px;font-weight:600;font-family:Caveat,cursive;cursor:${editable ? "pointer" : "default"};pointer-events:${editable ? "auto" : "none"}">${lbl}</button>`;
+        return `<button style="padding:3px 9px;border:2px solid ${on ? p.color : "#ddd"};background:${on ? p.color : "#fff"};color:${on ? "#fff" : "#888"};border-radius:12px;font-size:12px;font-weight:600;font-family:Caveat,cursive;cursor:default;pointer-events:none">${lbl}</button>`;
       }).join("");
-      const rdyLabel = p.ready ? "✓ Ready" : (p.mode === "ai" ? "AI Bot" : p.mode === "controller" ? "Not Ready" : "Not Ready");
+      const rdyLabel = p.ready ? "✓ Ready" : (p.mode === "ai" ? "AI Bot" : "Not Ready");
       const rdyBg = p.ready ? "#4CAF50" : (p.mode === "ai" ? "#7B1FA2" : "#eee");
       const rdyTc = (p.ready || p.mode === "ai") ? "#fff" : "#999";
-      const badge = p.mode === "controller" ? "📱" : p.mode === "keyboard" ? "⌨️" : "🤖";
+      const badge = p.mode === "controller" ? "📱" : "🤖";
       return `<div style="background:#fff;border-radius:12px;padding:12px 15px;box-shadow:0 2px 7px rgba(0,0,0,0.05);border-left:5px solid ${p.color};display:flex;align-items:center;gap:12px">
         <div style="width:40px;height:40px;border-radius:50%;background:${p.color};display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#fff;flex-shrink:0">${i + 1}</div>
         <div style="flex:1;min-width:0">
@@ -791,13 +922,6 @@ class DriftScreen {
         <div style="padding:4px 12px;border-radius:18px;background:${rdyBg};color:${rdyTc};font-size:13px;font-weight:600;flex-shrink:0">${rdyLabel}</div>
       </div>`;
     }).join("");
-    const p1 = this.playerById("p1");
-    const p1Label = p1.ready ? "✓ Ready! (click to unready)" : "Mark as Ready";
-    const p1Bg = p1.ready ? "#388E3C" : "#E63946";
-    const p1Shadow = p1.ready ? "#1B5E20" : "#B71C1C";
-    const p1ReadyBtn = p1.mode === "keyboard"
-      ? `<button data-action="toggleReady" style="padding:12px;background:${p1Bg};color:#fff;border:none;border-radius:12px;font-size:20px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;box-shadow:0 4px 0 ${p1Shadow};transform:translateY(-2px)">${p1Label}</button>`
-      : "";
     const qr = this.qrDataUrl
       ? `<img src="${this.qrDataUrl}" alt="QR" style="width:140px;height:140px;image-rendering:pixelated" />`
       : `<div style="color:#999;font-size:13px">…</div>`;
@@ -809,7 +933,7 @@ class DriftScreen {
           <div style="font-size:16px;color:#8BC34A;margin-top:2px">Online multiplayer arcade racing</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
-          <div style="font-size:13px;color:rgba(255,255,255,0.38);text-align:right;line-height:1.5">Arrow keys = Player 1<br>Phones scan the QR to join</div>
+          <div style="font-size:13px;color:rgba(255,255,255,0.38);text-align:right;line-height:1.5">Phones scan the QR to join</div>
           <button data-action="openController" style="padding:9px 16px;background:#E63946;color:#fff;border:none;border-radius:9px;font-size:15px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;white-space:nowrap">Open Controller ↗</button>
         </div>
       </div>
@@ -838,7 +962,6 @@ class DriftScreen {
             <div style="font-size:14px;color:#999">${readyStatus}</div>
           </div>
           ${players}
-          ${p1ReadyBtn}
         </div>
       </div>
       <div style="background:#1a2a0a;padding:12px 28px;display:flex;align-items:center;justify-content:flex-end;gap:16px;flex-shrink:0">
@@ -880,9 +1003,7 @@ class DriftScreen {
         <div style="font-size:11px;color:rgba(255,255,255,0.35);letter-spacing:1px;font-family:sans-serif">LAP</div>
         <div style="font-size:32px;font-weight:700;color:#fff;line-height:1;font-family:'Caveat',cursive">${s.playerLapStr}</div>
       </div>
-      <div style="position:absolute;bottom:10px;left:10px;background:rgba(0,0,0,0.42);border-radius:7px;padding:4px 10px;z-index:10">
-        <div style="font-size:11px;color:rgba(255,255,255,0.32);font-family:sans-serif">↑ Gas · ↓ Brake/Drift · ← → Steer</div>
-      </div>`;
+      `;
   }
 
   resultsHTML() {
