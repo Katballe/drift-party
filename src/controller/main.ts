@@ -39,24 +39,73 @@ class DriftController {
     this.checkOri();
     window.addEventListener("resize", () => this.checkOri());
 
-    // Press / release handlers (document-level so re-renders don't drop them).
-    const down = (e: Event) => {
-      const el = (e.target as HTMLElement)?.closest?.('[id^="btn-"]') as HTMLElement | null;
-      if (!el) return;
+    // Per-finger tracking: touch.identifier → button name.
+    // Lifting one finger only releases that finger's button, so GAS + STEER
+    // works correctly when held simultaneously.
+    const touchMap = new Map<number, string>();
+
+    const btnAt = (x: number, y: number): string | null => {
+      const el = document.elementFromPoint(x, y)?.closest('[id^="btn-"]') as HTMLElement | null;
+      return el ? el.id.replace("btn-", "") : null;
+    };
+
+    const syncBtns = (immediate = false) => {
+      const active = new Set(touchMap.values());
+      this.bL = active.has("left");
+      this.bR = active.has("right");
+      this.bT = active.has("throttle");
+      this.bB = active.has("brake");
+      this.refreshBtns();
+      if (immediate) this.sendInput();
+    };
+
+    document.addEventListener("touchstart", (e) => {
       if ((e as any).cancelable) e.preventDefault();
-      this.setBtn(el.id.replace("btn-", ""), true);
-    };
-    const up = (e: Event) => {
+      for (const t of Array.from(e.changedTouches)) {
+        const btn = btnAt(t.clientX, t.clientY);
+        if (btn) touchMap.set(t.identifier, btn);
+      }
+      syncBtns(true);
+    }, { passive: false });
+
+    document.addEventListener("touchend", (e) => {
+      for (const t of Array.from(e.changedTouches)) touchMap.delete(t.identifier);
+      syncBtns(true);
+    });
+
+    document.addEventListener("touchcancel", (e) => {
+      for (const t of Array.from(e.changedTouches)) touchMap.delete(t.identifier);
+      syncBtns(true);
+    });
+
+    // Re-evaluate fingers as they move so buttons act as zones: a finger that
+    // slides off a button releases it, and one that slides onto another button
+    // switches to it. Only re-sync on an actual button transition (not every
+    // wiggle within the same button) to avoid flooding the input stream.
+    document.addEventListener("touchmove", (e) => {
+      if (this.state.gameState !== "RACING" || this.state.showPortrait) return;
+      let changed = false;
+      for (const t of Array.from(e.changedTouches)) {
+        const btn = btnAt(t.clientX, t.clientY);
+        const prev = touchMap.get(t.identifier);
+        if (btn) { if (btn !== prev) { touchMap.set(t.identifier, btn); changed = true; } }
+        else if (prev !== undefined) { touchMap.delete(t.identifier); changed = true; }
+      }
+      if (changed) syncBtns(true);
+    }, { passive: true });
+
+    // Mouse fallback for desktop testing.
+    document.addEventListener("mousedown", (e) => {
       const el = (e.target as HTMLElement)?.closest?.('[id^="btn-"]') as HTMLElement | null;
       if (!el) return;
-      this.setBtn(el.id.replace("btn-", ""), false);
-    };
-    const allUp = () => { this.bL = this.bR = this.bT = this.bB = false; this.refreshBtns(); };
-    document.addEventListener("touchstart", down, { passive: false });
-    document.addEventListener("touchend", up);
-    document.addEventListener("touchcancel", allUp);
-    document.addEventListener("mousedown", down);
-    document.addEventListener("mouseup", allUp);
+      this.setBtn(el.id.replace("btn-", ""), true);
+      this.sendInput();
+    });
+    document.addEventListener("mouseup", () => {
+      this.bL = this.bR = this.bT = this.bB = false;
+      this.refreshBtns();
+      this.sendInput();
+    });
 
     // Delegated taps for lobby buttons (car picker, ready, join).
     this.root.addEventListener("click", (e) => this.onClick(e));
@@ -120,7 +169,17 @@ class DriftController {
         break;
       case "playerStatus":
         if (msg.playerId === this.myPlayerId) {
-          this.setState({ position: msg.rank, lap: msg.lap, totalLaps: msg.totalLaps, driftCombo: msg.driftCombo, driftScore: msg.driftScore });
+          // Patch the HUD text in place — do NOT setState()/render() here. A full
+          // render rebuilds the button DOM, and replacing a button element under a
+          // finger that's currently held cancels that touch (touchcancel / lost
+          // touch target), spuriously releasing or sticking the button. These
+          // arrive ~10x/s during a race, so re-rendering makes held buttons drop.
+          Object.assign(this.state, {
+            position: msg.rank, lap: msg.lap, totalLaps: msg.totalLaps,
+            driftCombo: msg.driftCombo, driftScore: msg.driftScore,
+          });
+          if (this.state.gameState === "RACING" && !this.state.showPortrait) this.updateRaceHUD();
+          else this.render();
         }
         break;
       case "playerFinished":
@@ -164,6 +223,18 @@ class DriftController {
   }
 
   // ─── Rendering ────────────────────────────────────────────────────────────
+  // Update just the race HUD's text nodes, leaving the button DOM (and any
+  // active touches on it) untouched. Used for the frequent playerStatus updates.
+  updateRaceHUD() {
+    const s = this.state;
+    const pos = document.getElementById("hud-pos");
+    const lap = document.getElementById("hud-lap");
+    const drift = document.getElementById("hud-drift");
+    if (pos) pos.textContent = this.posStr();
+    if (lap) lap.textContent = "Lap " + Math.min(s.lap, s.totalLaps) + "/" + s.totalLaps;
+    if (drift) drift.textContent = s.driftCombo > 0 ? "+" + s.driftCombo : "—";
+  }
+
   refreshBtns() {
     // Update only the four control buttons' styles (no full re-render → no input lag).
     if (this.state.gameState !== "RACING" || this.state.showPortrait) return;
@@ -257,12 +328,12 @@ class DriftController {
       <div style="height:50px;background:rgba(0,0,0,0.95);padding:0 14px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.07)">
         <div style="display:flex;align-items:center;gap:9px">
           <div style="width:13px;height:13px;border-radius:50%;background:#E63946;flex-shrink:0"></div>
-          <div style="font-size:26px;font-weight:700;color:#fff;font-family:'Caveat',cursive">${this.posStr()}</div>
+          <div id="hud-pos" style="font-size:26px;font-weight:700;color:#fff;font-family:'Caveat',cursive">${this.posStr()}</div>
         </div>
-        <div style="font-size:20px;color:rgba(255,255,255,0.5);font-family:'Caveat',cursive">Lap ${lapStr}</div>
+        <div id="hud-lap" style="font-size:20px;color:rgba(255,255,255,0.5);font-family:'Caveat',cursive">Lap ${lapStr}</div>
         <div style="display:flex;align-items:center;gap:5px">
           <div style="font-size:10px;color:rgba(255,255,255,0.3);letter-spacing:.5px;font-family:sans-serif">DRIFT</div>
-          <div style="font-size:22px;font-weight:700;color:#FFD600;font-family:'Caveat',cursive">${driftStr}</div>
+          <div id="hud-drift" style="font-size:22px;font-weight:700;color:#FFD600;font-family:'Caveat',cursive">${driftStr}</div>
         </div>
       </div>
       <div style="flex:1;display:flex;padding:7px;gap:7px;min-height:0">
