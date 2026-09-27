@@ -1,30 +1,48 @@
-name: Deploy to Cloudflare
+# Standard deploy for Katballe's Cloudflare Workers.
+# Keep this file IDENTICAL in every repo — ops/deploy-check verifies it.
+#
+# What a repo must provide:
+#   - `npm run deploy`: checks, builds, and ends with `wrangler deploy`
+#   - a package-lock.json (for `npm ci`) with wrangler as a devDependency
+#   - repo secret CLOUDFLARE_API_TOKEN (Cloudflare API token, "Edit Cloudflare Workers")
+#
+# Every deploy is tagged with the commit it came from, so it's always clear
+# which commit is live (`wrangler deployments list`, or ops/deploy-check).
+name: Deploy
 
-# Auto-deploy the Worker (build + wrangler deploy) on every push to main.
-# Requires a repo secret CLOUDFLARE_API_TOKEN (a Cloudflare token with
-# "Edit Cloudflare Workers" permissions on the Katballe account).
 on:
   push:
     branches: [main]
   workflow_dispatch: {}
 
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - run: npm ci
-
-      # npm run deploy = `vite build && wrangler deploy`; wrangler reads the
-      # token + account id from the environment.
-      - name: Build & deploy
-        run: npm run deploy
+      - name: Check the Cloudflare token is set
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: "36fc8f0c4cec0df9978aa5a86d383984"
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error title=Missing secret::Add the CLOUDFLARE_API_TOKEN repo secret (ops/deploy-check/set-cloudflare-secret.ps1), then re-run this workflow."
+            exit 1
+          fi
+      - name: Check, build and deploy
+        run: npm run deploy -- --tag "${GITHUB_SHA::7}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: 36fc8f0c4cec0df9978aa5a86d383984
