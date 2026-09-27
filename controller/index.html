@@ -2,19 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, maximum-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>Drift Party — Controller</title>
+  <meta name="description" content="Your phone is the controller. Join a Drift Party race." />
+  <meta name="theme-color" content="#1a2a0a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏁</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap" rel="stylesheet" />
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
-    body { background: #1a2a0a; overflow: hidden; touch-action: none; font-family: 'Caveat', cursive; }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
+    body { background: #f0ede4; font-family: 'Caveat', cursive; overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    input { -webkit-user-select: text; user-select: text; }
+    button { -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+    #root { position: fixed; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   </style>
 </head>
 <body>
-  <div id="root" style="width:100vw;height:100vh;background:#1a2a0a;position:relative;overflow:hidden;font-family:'Caveat',cursive;touch-action:none"></div>
+  <div id="root"></div>
   <script type="module" src="/src/controller/main.ts"></script>
 </body>
 </html>

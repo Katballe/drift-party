@@ -3,11 +3,53 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Drift Party</title>
-  <meta http-equiv="refresh" content="0; url=/screen/" />
-  <script>location.replace("/screen/" + location.hash);</script>
+  <title>Drift Party — free online party racing</title>
+  <meta name="description" content="Free online party racing game. Put the race on a big screen, and everyone plays with their phone as the controller. No app, no sign-up." />
+  <meta property="og:title" content="Drift Party" />
+  <meta property="og:description" content="Free online party racing — your phone is the controller. No app, no sign-up." />
+  <meta name="theme-color" content="#1a2a0a" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏁</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; background: #1a2a0a; color: #f0ede4; font-family: 'Caveat', cursive; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+    main { width: 100%; max-width: 760px; text-align: center; }
+    h1 { font-size: clamp(56px, 12vw, 104px); color: #FFD600; line-height: 1; }
+    .tag { font-size: clamp(20px, 4vw, 28px); color: #8BC34A; margin: 6px 0 28px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    .card { background: #f0ede4; color: #1a2a0a; border-radius: 18px; padding: 22px; text-align: left; }
+    .card h2 { font-size: 32px; line-height: 1; margin-bottom: 6px; }
+    .card p { font-size: 19px; color: #6b6450; line-height: 1.25; margin-bottom: 14px; }
+    .btn { display: inline-block; width: 100%; text-align: center; padding: 12px 18px; border: none; border-radius: 12px; font: 700 26px 'Caveat', cursive; cursor: pointer; text-decoration: none; }
+    .host { background: #FFD600; color: #1a2a0a; box-shadow: 0 4px 0 #b8920a; }
+    .join { background: #E63946; color: #fff; box-shadow: 0 4px 0 #B71C1C; flex-shrink: 0; width: auto; }
+    form { display: flex; gap: 8px; }
+    input { flex: 1; min-width: 0; padding: 10px 12px; border: 2px solid #ddd; border-radius: 10px; font: 700 26px 'Caveat', cursive; letter-spacing: 4px; text-align: center; text-transform: uppercase; background: #fff; color: #333; }
+    .how { margin-top: 26px; font-size: 20px; color: rgba(240,237,228,0.6); line-height: 1.4; }
+  </style>
 </head>
 <body>
-  <p>Redirecting to <a href="/screen/">Drift Party</a>…</p>
+  <main>
+    <h1>DRIFT PARTY</h1>
+    <div class="tag">Free online party racing — your phone is the controller</div>
+    <div class="cards">
+      <div class="card">
+        <h2>🖥️ Host a race</h2>
+        <p>Open this on a TV, laptop or monitor everyone can see. Up to 4 racers — empty seats are AI.</p>
+        <a class="btn host" href="/screen/">Start a game ▶</a>
+      </div>
+      <div class="card">
+        <h2>📱 Join with a phone</h2>
+        <p>Scan the QR code on the big screen, or type its room code here.</p>
+        <form action="/controller/" method="get">
+          <input name="room" placeholder="CODE" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" required />
+          <button class="btn join" type="submit">Join</button>
+        </form>
+      </div>
+    </div>
+    <div class="how">No app, no sign-up. Steer with the left thumb, gas and brake with the right —<br>brake while steering to drift and rack up points.</div>
+  </main>
 </body>
 </html>

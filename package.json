@@ -8,13 +8,16 @@
     "build": "vite build",
     "dev:client": "vite",
     "dev": "vite build && wrangler dev",
-    "deploy": "vite build && wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "deploy": "npm run check && vite build && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild test/sim.test.ts --bundle --platform=node --format=esm --outfile=.test-out/sim.test.mjs --log-level=warning && node .test-out/sim.test.mjs",
+    "check": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
     "@types/node": "^26.0.1",
     "@types/qrcode": "^1.5.6",
+    "esbuild": "^0.25.12",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "wrangler": "^4.85.0"
