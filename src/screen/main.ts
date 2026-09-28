@@ -554,7 +554,7 @@ class DriftScreen {
     this.dev?.render();
     const showCount = ph === "COUNTDOWN" || ph === "PAUSED" || (ph === "RACING" && this.goT > 0);
     this.set(this.els.countdown, showCount ? this.overlayHTML() : "", showCount);
-    this.set(this.els.hud, this.inRace ? this.hudHTML() : "", this.inRace);
+    this.renderHud();
     this.set(this.els.results, ph === "FINISHED" ? this.resultsHTML() : "", ph === "FINISHED");
   }
 
@@ -574,7 +574,7 @@ class DriftScreen {
           <div style="width:30px;height:30px;border-radius:50%;border:3px dashed ${col};flex-shrink:0;opacity:.6"></div>
           <div style="font-size:17px;line-height:1.1">Waiting for a phone…</div></div>`;
       }
-      const card = (badge: string, name: string, sub: string, right: string) => `<div style="position:relative;min-width:0;background:#fff;border-radius:14px;padding:7px 10px;border-left:6px solid ${col};box-shadow:0 2px 7px rgba(0,0,0,0.06);display:flex;align-items:center;gap:8px;animation:fadeIn .3s">
+      const card = (badge: string, name: string, sub: string, right: string) => `<div style="position:relative;min-width:0;background:#fff;border-radius:14px;padding:7px 10px;border-left:6px solid ${col};box-shadow:0 2px 7px rgba(0,0,0,0.06);display:flex;align-items:center;gap:8px">
         <div style="width:30px;height:30px;border-radius:50%;background:${col};color:#fff;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${badge}</div>
         <div style="min-width:0;flex:1">
           <div style="font-size:20px;font-weight:700;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15">${name}</div>
@@ -701,7 +701,34 @@ class DriftScreen {
     </div>`;
   }
 
-  hudHTML() {
+  /**
+   * The race HUD is three separate parts, each rewritten only when its own
+   * content changes: the top bar (the clock changes it constantly), the toasts
+   * and the banner. Rebuilding everything together restarted the toasts' and
+   * banner's entrance every tick, which made them flash.
+   */
+  renderHud() {
+    const hud = this.els.hud, show = this.inRace && !!this.race;
+    hud.style.display = show ? "block" : "none";
+    if (!show) return;
+    if (!hud.firstElementChild) {
+      hud.innerHTML = `<div id="hud-bar"></div>
+        <div id="hud-toasts" style="position:absolute;bottom:.8em;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:.3em;z-index:12;pointer-events:none"></div>
+        <div id="hud-banner"></div>`;
+    }
+    const fill = (id: string, html: string) => {
+      const el = hud.querySelector<HTMLElement>(`#${id}`)!;
+      if (this.html.get(el) !== html) { this.html.set(el, html); el.innerHTML = html; }
+    };
+    const now = performance.now();
+    this.toasts = this.toasts.filter((x) => x.until > now);
+    fill("hud-bar", this.hudBarHTML());
+    fill("hud-toasts", this.toasts.map((x) => `<div style="background:rgba(0,0,0,0.8);color:#fff;border-left:.3em solid ${x.color};padding:.25em .8em;border-radius:.5em;font-size:1.1em">${esc(x.text)}</div>`).join(""));
+    fill("hud-banner", now < this.bannerUntil
+      ? `<div style="position:absolute;top:36%;left:0;right:0;text-align:center;font-size:6em;font-weight:700;color:#FF5252;text-shadow:0 0 .4em rgba(255,82,82,0.6),0 .06em 0 rgba(0,0,0,0.45);pointer-events:none;animation:popIn .4s">${this.bannerText}</div>` : "");
+  }
+
+  hudBarHTML() {
     const race = this.race;
     if (!race) return "";
     const rnk = race.rankings(), leaderLap = race.lapOf(rnk[0]), t = TRACKS[this.trackId];
@@ -709,11 +736,6 @@ class DriftScreen {
     const chips = rnk.map((c, i) => `<div style="display:flex;align-items:center;gap:.3em;background:${c.ghost ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.14)"};border-radius:.8em;padding:.1em ${compact ? ".45em" : ".6em"} .1em .25em;opacity:${c.ghost ? 0.55 : 1};white-space:nowrap;flex-shrink:0;${compact && c.finished ? "box-shadow:inset 0 0 0 .12em #FFD600" : ""}">
         <span style="width:1.3em;height:1.3em;border-radius:50%;background:${c.color};color:#fff;font-size:.85em;font-weight:700;display:inline-flex;align-items:center;justify-content:center">${i + 1}</span>
         <span style="max-width:${compact ? "4.6em" : "6.5em"};overflow:hidden;text-overflow:ellipsis">${c.ghost ? "📵 " : c.human ? "" : "🤖"}${esc(c.name)}</span>${c.finished && !compact ? `<span style="color:#FFD600">🏁 ${fmtT(c.finishTime!)}</span>` : ""}</div>`).join("");
-    const now = performance.now();
-    this.toasts = this.toasts.filter((x) => x.until > now);
-    const toasts = this.toasts.map((x) => `<div style="background:rgba(0,0,0,0.8);color:#fff;border-left:.3em solid ${x.color};padding:.25em .8em;border-radius:.5em;font-size:1.1em;animation:fadeIn .25s">${esc(x.text)}</div>`).join("");
-    const banner = now < this.bannerUntil
-      ? `<div style="position:absolute;top:36%;left:0;right:0;text-align:center;font-size:6em;font-weight:700;color:#FF5252;text-shadow:0 0 .4em rgba(255,82,82,0.6),0 .06em 0 rgba(0,0,0,0.45);pointer-events:none;animation:popIn .4s">${this.bannerText}</div>` : "";
     return `<div style="position:absolute;top:0;left:0;right:0;height:3.2em;background:rgba(10,16,6,0.82);display:flex;align-items:center;gap:1em;padding:0 .8em;color:#fff;font-size:1em;z-index:10">
         <div style="line-height:1;white-space:nowrap"><div style="font-size:1.25em;font-weight:700">${esc(t.name)}</div>
           <div style="font-size:.8em;color:rgba(255,255,255,0.55)">${this.cup ? `🏆 Race ${this.cup.index + 1}/${this.cup.tracks.length}` : "Single race"}</div></div>
@@ -723,9 +745,7 @@ class DriftScreen {
         <div style="font-size:1.4em;font-weight:700;color:#FFD600;min-width:3.6em">${fmtT(race.time)}</div>
         <div style="flex:1;display:flex;gap:${compact ? ".3em" : ".5em"};overflow:hidden;font-size:${compact ? ".95em" : "1.15em"}">${chips}</div>
         <button data-action="pause" title="Pause (Esc)" style="background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:.5em;padding:.2em .7em;font-size:1em;font-family:Caveat,cursive;font-weight:700;cursor:pointer">⏸ Pause</button>
-      </div>
-      <div style="position:absolute;bottom:.8em;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:.3em;z-index:12;pointer-events:none">${toasts}</div>
-      ${banner}`;
+      </div>`;
   }
 
   resultsHTML() {

@@ -316,7 +316,7 @@ export function drawTrack(ctx: CanvasRenderingContext2D, t: TrackDef, quick: boo
   for (const b of t.boosts) drawBoost(ctx, b.x, b.y, b.a, b.len, b.w);
   for (const b of t.bumps) drawBump(ctx, b.x1, b.y1, b.x2, b.y2);
   if (!quick) for (const g of t.gates.slice(1)) {
-    if (t.checkerLines) drawChecker(ctx, t.pts[g.i], 7, g.i);
+    if (t.checkpointLines) drawCheckpointLine(ctx, t.pts[g.i], g.i);
     drawCheckpoint(ctx, t, g);
   }
   drawChecker(ctx, t.pts[0], 11, 42); // start / finish line
@@ -449,7 +449,20 @@ function drawCheckpoint(ctx: CanvasRenderingContext2D, t: TrackDef, g: Gate) {
   }
 }
 
-/** Inked two-row checker strip across the road at a centerline point (start line, and checkpoints if enabled). */
+/** Checkpoint line: one row of red and white blocks across the road — unlike the black-and-white start line. */
+function drawCheckpointLine(ctx: CanvasRenderingContext2D, p: TrackDef["pts"][number], seed: number) {
+  const bz = 9, n = Math.floor((p.hw * 2 - 4) / bz);
+  ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.atan2(p.ty, p.tx) + Math.PI / 2);
+  const r = rng(seed), x0 = -(n * bz) / 2, y0 = -bz / 2;
+  for (let k = 0; k < n; k++) {
+    ctx.fillStyle = k % 2 === 0 ? "#d8453b" : "#f4efe2";
+    ctx.fillRect(x0 + k * bz + (r() - 0.5) * 0.8, y0 + (r() - 0.5) * 0.8, bz, bz);
+  }
+  inkShape(ctx, sampleRoundRect(x0 - 1, y0 - 1, n * bz + 2, bz + 2, 1, 6), 0.7, seed + 35, null, INK, 1.4);
+  ctx.restore();
+}
+
+/** Inked two-row black-and-white checker strip across the road: the start / finish line. */
 function drawChecker(ctx: CanvasRenderingContext2D, p: TrackDef["pts"][number], bz: number, seed: number) {
   const rows = Math.floor((p.hw * 2 - 4) / bz);
   ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.atan2(p.ty, p.tx) + Math.PI / 2);

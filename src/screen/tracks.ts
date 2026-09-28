@@ -55,7 +55,7 @@ export interface TrackEdit {
   bumps?: number[];       // speed bumps, as lap fractions (0–1 from the start line)
   bumpLoss?: number;      // fraction of speed a bump takes at full speed
   checkpoints?: number[]; // hand-placed checkpoints (lap fractions); omit for automatic (key corners)
-  checkerLines?: boolean; // draw a checkered line across the road between each checkpoint's flags
+  checkpointLines?: boolean; // draw a red/white line across the road between each checkpoint's flags
   // Hand-placed features — each list, when present, replaces the track's own:
   boosts?: { at: number; off: number }[];                            // lap fraction + sideways offset (−1…1 of the half-width)
   sand?: { x: number; y: number; r: number }[];                      // sand / snow patches
@@ -74,7 +74,7 @@ export interface TrackDef {
   bumps: Bump[]; bumpLoss: number;
   obstacles: Obstacle[];
   manualScenery: boolean; // scenery was hand-placed (so the clutter setting doesn't apply)
-  checkerLines: boolean;
+  checkpointLines: boolean;
   grip: number;          // surface grip multiplier (ice < 1)
   baseGrip: number;      // the grip the spec ships with (before edits)
   walls: boolean;
@@ -443,7 +443,7 @@ function build(spec: Spec, edit: TrackEdit = {}): TrackDef {
     sand: circles(edit.sand, (spec.sand ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; })),
     boosts,
     bumps, bumpLoss: clamp(edit.bumpLoss, 0, 0.8, BUMP_LOSS),
-    obstacles, manualScenery, checkerLines: edit.checkerLines === true,
+    obstacles, manualScenery, checkpointLines: (edit.checkpointLines ?? (edit as { checkerLines?: boolean }).checkerLines) === true, // (old drafts said checkerLines)
     grip: clamp(edit.grip, 0.1, 1.5, spec.grip ?? 1), baseGrip: spec.grip ?? 1,
     walls: !open,
     roughness: clamp(edit.roughness, 0, 2, 1), clutter,

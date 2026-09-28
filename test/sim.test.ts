@@ -373,7 +373,8 @@ console.log("\nTrack edits");
   // Checkpoint lines only span the road, on open tracks too.
   const open = buildTrack("sunny", { walls: false });
   ok(open.gates.every((g) => Math.abs(Math.hypot(g.x2 - g.x1, g.y2 - g.y1) - 2 * (open.pts[g.i].hw + 12)) < 0.01), "checkpoint lines stay on the road on open tracks");
-  ok(buildTrack("snake", { checkerLines: true }).checkerLines && !TRACKS.snake.checkerLines, "checkered checkpoint lines are an option (off by default)");
+  ok(buildTrack("snake", { checkpointLines: true }).checkpointLines && !TRACKS.snake.checkpointLines, "red/white checkpoint lines are an option (off by default)");
+  ok(buildTrack("snake", { checkerLines: true } as never).checkpointLines, "…and drafts saved under the old name still work");
 }
 {
   // Every feature can be placed / removed individually.

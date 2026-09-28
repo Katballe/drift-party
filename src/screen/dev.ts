@@ -385,7 +385,7 @@ export class DevTools {
       case "tool": this.setTool(el.dataset.tool as Tool); return;
       case "reset": if (kind) { this.set({ [FIELD[kind]]: null } as Draft); this.msg = `${NAMES[kind][1]} back to the track's own.`; } break;
       case "clear": if (kind) { this.set({ [FIELD[kind]]: [] } as Draft); this.msg = `All ${NAMES[kind][1].toLowerCase()} removed.`; } break;
-      case "checker": this.set({ checkerLines: el.dataset.on === "1" ? true : null }); break;
+      case "checker": this.set({ checkpointLines: el.dataset.on === "1" ? true : null }); break;
       case "walls": this.set({ walls: el.dataset.on === "1" ? null : false }); this.msg = el.dataset.on === "1" ? "Walls are back." : "Open track: drive anywhere — the screen edge is the wall."; break;
       case "discardTrack": delete this.drafts[this.id]; save(DRAFT_KEY, this.drafts); this.apply(); this.msg = `Draft edits for ${t.name} discarded.`; break;
       case "discardAll": this.drafts = {}; save(DRAFT_KEY, this.drafts); this.apply(); this.msg = "All draft edits discarded."; break;
@@ -475,7 +475,7 @@ export class DevTools {
       ${rows}
       ${hint("reset = back to the track's own layout · clear = remove them all")}
       <div style="font-size:18px;margin-top:8px">Checkpoint look</div>
-      <div style="display:flex;gap:6px;margin-top:3px">${btn("checker", "🚩 Flags", !t.checkerLines, 'data-on="0"')} ${btn("checker", "🏁 Flags + checkered line", t.checkerLines, 'data-on="1"')}</div>
+      <div style="display:flex;gap:6px;margin-top:3px">${btn("checker", "🚩 Flags", !t.checkpointLines, 'data-on="0"')} ${btn("checker", "🚩 Flags + red/white line", t.checkpointLines, 'data-on="1"')}</div>
       ${hint("Checkpoints must be crossed in order, on the road. Skip one (e.g. by cutting across the grass) and the lap doesn't count until you go back.")}
       ${slider("bumpLoss", "Speed bump: speed lost at full speed", 0.05, 0.7, 0.05, t.bumpLoss, `Default ${BUMP_LOSS}. Slower cars lose less; the Monster Truck barely notices.`)}
 
