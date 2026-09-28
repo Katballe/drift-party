@@ -89,6 +89,29 @@ export type SimEvent =
   | { k: "boost"; id: RacerId }
   | { k: "bump"; x: number; y: number; imp: number; id: RacerId };
 
+/** A car's collision footprint: its body length, and its width including the wheels that stick out. */
+export const hull = (c: { cfg: { w: number; h: number } }) => ({ hx: c.cfg.w / 2, hy: c.cfg.h * 0.56 });
+
+/**
+ * Do two cars' footprints overlap? Oriented boxes, separating-axis test.
+ * Returns how deep and the direction (unit, from a to b) that separates them.
+ */
+export function carOverlap(a: { x: number; y: number; a: number; cfg: { w: number; h: number } }, b: typeof a): { depth: number; nx: number; ny: number } | null {
+  const ha = hull(a), hb = hull(b), dx = b.x - a.x, dy = b.y - a.y;
+  const reach = Math.hypot(ha.hx, ha.hy) + Math.hypot(hb.hx, hb.hy);
+  if (dx * dx + dy * dy >= reach * reach) return null;
+  const ca = Math.cos(a.a), sa = Math.sin(a.a), cb = Math.cos(b.a), sb = Math.sin(b.a);
+  let depth = Infinity, nx = 0, ny = 0;
+  for (const [ux, uy] of [[ca, sa], [-sa, ca], [cb, sb], [-sb, cb]]) {
+    const ra = ha.hx * Math.abs(ca * ux + sa * uy) + ha.hy * Math.abs(-sa * ux + ca * uy);
+    const rb = hb.hx * Math.abs(cb * ux + sb * uy) + hb.hy * Math.abs(-sb * ux + cb * uy);
+    const d = dx * ux + dy * uy, ov = ra + rb - Math.abs(d);
+    if (ov <= 0) return null; // a gap along this axis: not touching
+    if (ov < depth) { depth = ov; const sg = d < 0 ? -1 : 1; nx = ux * sg; ny = uy * sg; }
+  }
+  return { depth, nx, ny };
+}
+
 const NO_INPUT: Input = { left: false, right: false, throttle: false, brake: false };
 
 export class Race {
@@ -143,7 +166,8 @@ export class Race {
     }
     this.modifiers(dt);
     for (const c of this.cars) this.physics(c, dt);
-    this.collide();
+    this.collide(true);
+    this.collide(false); // settle pile-ups: a push can shove a car into a third one
     for (const c of this.cars) this.walls(c, dt);
     for (const c of this.cars) {
       this.pads(c, dt); this.bumps(c); this.gates(c);
@@ -328,30 +352,31 @@ export class Race {
     });
   }
 
-  private collide() {
+  /** Car-to-car contact: oriented boxes shaped like the cars (see carOverlap). */
+  private collide(report: boolean) {
     const cs = this.cars;
     for (let i = 0; i < cs.length; i++) {
       for (let j = i + 1; j < cs.length; j++) {
         const a = cs[i], b = cs[j];
         if (a.finished || b.finished || a.ghost || b.ghost) continue; // ghosts & finished cars pass through
-        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
-        const mn = (a.cfg.w + b.cfg.w) * 0.42;
-        if (d >= mn || d < 0.01) continue;
-        const ov = mn - d, nx = dx / d, ny = dy / d, tm = a.cfg.mass + b.cfg.mass;
-        a.x -= nx * ov * (b.cfg.mass / tm); a.y -= ny * ov * (b.cfg.mass / tm);
-        b.x += nx * ov * (a.cfg.mass / tm); b.y += ny * ov * (a.cfg.mass / tm);
+        const o = carOverlap(a, b);
+        if (!o) continue;
+        const { depth, nx, ny } = o, tm = a.cfg.mass + b.cfg.mass;
+        a.x -= nx * depth * (b.cfg.mass / tm); a.y -= ny * depth * (b.cfg.mass / tm);
+        b.x += nx * depth * (a.cfg.mass / tm); b.y += ny * depth * (a.cfg.mass / tm);
         const rvn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
         if (rvn >= 0) continue;
         const imp = 1.5 * rvn / tm;
         a.vx += imp * b.cfg.mass * nx; a.vy += imp * b.cfg.mass * ny;
         b.vx -= imp * a.cfg.mass * nx; b.vy -= imp * a.cfg.mass * ny;
-        if (-rvn > 25) {
+        if (report && -rvn > 25) {
           this.events.push({ k: "hit", x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, imp: -rvn, a: a.id, b: b.id });
           if (-rvn > 70) { a.hits++; b.hits++; }
         }
       }
     }
   }
+
 
   /** How hard off-road terrain bites this car (monster trucks barely notice). */
   private rough(c: SimCar) { return Math.min(1.5, c.cfg.rough * this.track.roughness); }

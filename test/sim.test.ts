@@ -1,6 +1,6 @@
 // Headless checks for the tracks and race simulation. Run with `npm test`.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { CAR_CFGS, Race, STEP, type BotSkill, type Entrant } from "../src/screen/sim";
+import { CAR_CFGS, Race, STEP, carOverlap, hull, type BotSkill, type Entrant } from "../src/screen/sim";
 import { BOUNDS, TRACKS, TRACK_ORDER, applyTrackEdits, buildTrack, edgeGap, lapFraction, lineIsClean, onRoad, type TrackDef } from "../src/screen/tracks";
 import { carStats } from "../src/shared/cars";
 import { CAR_TYPES, MAX_RACERS, type CarType, type RacerId } from "../src/shared/protocol";
@@ -15,6 +15,17 @@ const IDS: RacerId[] = ["p1", "b1", "p2", "b2", "p3", "b3", "p4", "b4"];
 const entrants = (types: CarType[], ai = true, skill?: BotSkill): Entrant[] =>
   types.map((t, i) => ({ id: IDS[i], name: IDS[i], color: "#000", carType: t, ai, skill }));
 const FULL: CarType[] = [...CAR_TYPES, "normal"]; // a full 8-car grid with every car in it
+
+/** Deepest overlap between any two solid cars right now (px). */
+const deepest = (r: Race) => {
+  let d = 0;
+  for (let i = 0; i < r.cars.length; i++) for (let j = i + 1; j < r.cars.length; j++) {
+    const a = r.cars[i], b = r.cars[j];
+    if (a.finished || b.finished || a.ghost || b.ghost) continue;
+    d = Math.max(d, carOverlap(a, b)?.depth ?? 0);
+  }
+  return d;
+};
 const fixed = () => 0.999; // bots at full skill, deterministic
 
 function run(race: Race, maxT: number, onStep?: (r: Race) => void) {
@@ -68,10 +79,12 @@ for (const id of TRACK_ORDER) {
   ok(sep > 18, `separate parts of the track never touch (closest wall gap ${sep.toFixed(0)} px)`);
 
   const race = new Race(t, entrants(FULL), 3, fixed);
-  const r = run(race, 400);
+  let overlap = 0;
+  const r = run(race, 400, (rc) => { overlap = Math.max(overlap, deepest(rc)); });
   ok(!r.nan, "no NaN positions");
   ok(r.offTrack === 0, `cars never leave the road (off-road samples: ${r.offTrack})`);
   ok(race.cars.length === 8 && race.cars.every((c) => c.finished), `a full 8-car field finishes 3 laps (t=${race.time.toFixed(1)}s)`);
+  ok(overlap < 1.5, `cars bump instead of driving into each other (deepest overlap all race: ${overlap.toFixed(2)} px)`);
   if (t.boosts.length) ok(r.boosts >= 4, `boost pads get used (${r.boosts} boosts)`);
   console.log(`    finish: ${race.rankings().map((c) => `${c.cfg.type} ${c.finishTime?.toFixed(1)}s`).join(", ")} · slipstream samples ${r.drafted}`);
 
@@ -170,6 +183,35 @@ ok(TRACKS.snake.gates.length > TRACKS.sunny.gates.length, `twisty Snake Canyon h
   ok(wrong === 0 && race.progress(a) > race.progress(b), `positions follow distance driven between checkpoints (mis-ranked steps: ${wrong})`);
 }
 
+console.log("\nCar-to-car contact");
+{
+  // Every pair of cars, nose to tail and side by side: contact happens exactly where the bodies meet.
+  let wrong = 0;
+  const at = (type: CarType, x: number, y: number, a: number) => ({ x, y, a, cfg: CAR_CFGS[type] });
+  for (const A of CAR_TYPES) for (const B of CAR_TYPES) {
+    const ha = hull({ cfg: CAR_CFGS[A] }), hb = hull({ cfg: CAR_CFGS[B] });
+    for (const [dx, dy, touch] of [[1, 0, ha.hx + hb.hx], [0, 1, ha.hy + hb.hy]] as const) {
+      const apart = carOverlap(at(A, 0, 0, 0), at(B, dx * (touch + 0.5), dy * (touch + 0.5), 0));
+      const touching = carOverlap(at(A, 0, 0, 0), at(B, dx * (touch - 0.5), dy * (touch - 0.5), 0));
+      if (apart || !touching) wrong++;
+    }
+  }
+  ok(wrong === 0, "for every pair of cars, contact starts exactly where the bodies meet (nose-to-tail and side-by-side)");
+  const tbone = carOverlap(at("normal", 0, 0, 0), at("bus", 0, CAR_CFGS.bus.w / 2 + hull({ cfg: CAR_CFGS.normal }).hy + 1, Math.PI / 2));
+  ok(!tbone, "a bus nosing up to a car's side stops at the side, not at a circle around it");
+}
+{
+  // Rear-end on a straight: the faster car bumps the slower one along instead of driving into it.
+  const race = new Race(TRACKS.sunny, entrants(["normal", "bus"], false), 3, fixed);
+  const [a, b] = race.cars, p = TRACKS.sunny.pts[25], h = Math.atan2(p.ty, p.tx);
+  Object.assign(b, { x: p.x, y: p.y, a: h, px: p.x, py: p.y, vx: p.tx * 80, vy: p.ty * 80 });
+  Object.assign(a, { x: p.x - p.tx * 60, y: p.y - p.ty * 60, a: h, px: p.x - p.tx * 60, py: p.y - p.ty * 60, vx: p.tx * 300, vy: p.ty * 300 });
+  a.input = { throttle: true, brake: false, left: false, right: false };
+  let overlap = 0, hit = false;
+  for (let k = 0; k < 120; k++) { race.step(STEP); hit ||= race.events.some((e) => e.k === "hit"); race.events.length = 0; overlap = Math.max(overlap, deepest(race)); }
+  ok(hit && overlap < 0.5 && b.speed > 120, `rear-ending: a real bump that shoves the car ahead (overlap ${overlap.toFixed(2)} px, bus pushed to ${b.speed.toFixed(0)} px/s)`);
+}
+
 console.log("\nMechanics");
 {
   const race = new Race(TRACKS.sunny, entrants(["normal"], false), 3, fixed);
@@ -196,12 +238,14 @@ const inside = (c: { x: number; y: number }) => c.x > BOUNDS.x0 && c.x < BOUNDS.
 for (const id of TRACK_ORDER) {
   const t = buildTrack(id, { walls: false, clutter: 3 });
   const race = new Race(t, entrants(FULL, true, "normal"), 3, fixed);
-  let out = 0, nan = false;
+  let out = 0, nan = false, overlap = 0;
   while (!race.isOver() && race.time < 500) {
     race.step(STEP); race.events.length = 0;
+    overlap = Math.max(overlap, deepest(race));
     for (const c of race.cars) { if (!inside(c)) out++; if (!Number.isFinite(c.x + c.y)) nan = true; }
   }
   ok(!nan && out === 0 && race.cars.every((c) => c.finished), `${t.name}: a full field of bots finishes, nobody leaves the screen (${t.obstacles.length} obstacles, ${race.time.toFixed(1)}s)`);
+  ok(overlap < 1.5, `…and cars never drive into each other (deepest overlap ${overlap.toFixed(2)} px)`);
   ok(t.obstacles.every((o) => edgeGap(t, o.x, o.y) > o.r), "scenery never sits on the road");
 }
 {

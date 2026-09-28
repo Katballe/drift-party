@@ -188,7 +188,7 @@ export class Renderer {
     const ctx = this.ctx;
     const { w, h } = car.cfg, type = car.cfg.type, seed = hashStr(car.id);
     ctx.save();
-    if (car.finished) ctx.globalAlpha = 0.45;
+    if (car.finished) ctx.globalAlpha = 0.28; // finished cars are ghosts: others drive through them
     if (car.ghost) ctx.globalAlpha = 0.3 + 0.1 * Math.sin(time * 6);
     ctx.translate(x, y); ctx.rotate(angle);
     // slipstream: wind lines streaming past
