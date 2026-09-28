@@ -482,8 +482,9 @@ class DriftScreen {
 
   // ── input ─────────────────────────────────────────────────────────────────
   onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement)?.tagName === "INPUT" || e.repeat) return;
-    if (this.dev?.onKey(e)) return;
+    if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+    if (this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
+    if (e.repeat) return;
     switch (e.code) {
       case "Enter": case "NumpadEnter":
         if (this.phase === "LOBBY") this.startRace();

@@ -338,6 +338,8 @@ console.log("\nSpeed bumps");
     return { bumped, loss: bumped ? 1 - after / before : 0 };
   };
   const normal = lossFor("normal"), truck = lossFor("truck"), none = lossFor("normal", { bumpLoss: 0 });
+  const ownSoft = lossFor("normal", { bumps: [{ at: 0.05, loss: 0.1 }] }), ownHard = lossFor("normal", { bumps: [{ at: 0.05, loss: 0.6 }], bumpLoss: 0.1 });
+  ok(ownSoft.loss < normal.loss * 0.5 && ownHard.loss > normal.loss * 1.4, `a bump's own strength overrides the track's (soft −${(ownSoft.loss * 100).toFixed(0)}%, hard −${(ownHard.loss * 100).toFixed(0)}%)`);
   ok(normal.bumped && normal.loss > 0.25, `hitting a bump at speed costs speed (normal car −${(normal.loss * 100).toFixed(0)}%)`);
   ok(truck.loss < normal.loss * 0.7, `the monster truck rides bumps better (−${(truck.loss * 100).toFixed(0)}%)`);
   ok(Math.abs(none.loss) < 0.02, "bump strength 0 = harmless");
@@ -389,6 +391,45 @@ console.log("\nTrack edits");
   let boosts = 0;
   run(pads, 20, (r) => { boosts += r.cars[0].boostT >= 1.09 ? 1 : 0; });
   ok(boosts > 0, "a hand-placed boost pad works");
+}
+
+console.log("\nPer-item attributes");
+{
+  // Boost pad power: a stronger pad kicks harder and lasts longer; size is kept.
+  const kick = (power: number) => {
+    const t = buildTrack("sunny", { boosts: [{ at: 0.1, off: 0, len: 90, w: 40, power }] });
+    const race = new Race(t, entrants(["normal"], false), 3, fixed), c = race.cars[0], p = t.boosts[0];
+    const q = t.pts[(p.i - 8 + t.pts.length) % t.pts.length];
+    Object.assign(c, { x: q.x, y: q.y, px: q.x, py: q.y, a: p.a, vx: Math.cos(p.a) * 150, vy: Math.sin(p.a) * 150, idx: (p.i - 8 + t.pts.length) % t.pts.length });
+    let t0 = 0, peak = 0;
+    for (let k = 0; k < 90; k++) { race.step(STEP); if (c.boostT > 0 && !t0) t0 = c.boostT; peak = Math.max(peak, c.speed); }
+    return { dur: t0, peak, len: p.len, w: p.w };
+  };
+  const weak = kick(0.5), strong = kick(2);
+  ok(strong.dur > weak.dur * 3 && strong.peak > weak.peak + 40 && weak.len === 90 && weak.w === 40, `boost pad power and size (boost ${weak.dur.toFixed(2)}s → ${strong.dur.toFixed(2)}s)`);
+  // Sand / oil strength.
+  const through = (edit: object, key: "sand" | "oil") => {
+    const t = buildTrack("sunny", edit);
+    t.obstacles.length = 0;
+    const race = new Race(t, entrants(["normal"], false), 3, fixed), c = race.cars[0], o = t[key][0];
+    Object.assign(c, { x: o.x - 30, y: o.y, px: o.x - 30, py: o.y, a: 0, vx: 220, vy: 0 });
+    c.input = { throttle: true, brake: false, left: false, right: key === "oil", };
+    run(race, 0.3);
+    return { speed: c.speed, drift: Math.abs(Math.atan2(c.vy, c.vx) - c.a) };
+  };
+  const mild = through({ sand: [{ x: 780, y: 185, r: 60, k: 0.3 }] }, "sand"), deep = through({ sand: [{ x: 780, y: 185, r: 60, k: 2 }] }, "sand");
+  ok(deep.speed < mild.speed - 30, `sand strength: deep sand (${deep.speed.toFixed(0)} px/s) slows more than light sand (${mild.speed.toFixed(0)})`);
+  const grippy = through({ oil: [{ x: 780, y: 185, r: 60, k: 0.2 }] }, "oil"), slick = through({ oil: [{ x: 780, y: 185, r: 60, k: 2 }] }, "oil");
+  ok(slick.drift > grippy.drift * 1.5, "oil strength: a slicker patch slides you more");
+  // Checkpoint line override, and old plain-number lists still work.
+  const t = buildTrack("sunny", { checkpoints: [0.2, { at: 0.5, line: true }, { at: 0.8, line: false }], checkpointLines: true });
+  ok(t.gates[1].line === undefined && t.gates[2].line === true && t.gates[3].line === false, "a checkpoint can override the track's red/white line");
+  ok(buildTrack("sunny", { bumps: [0.3, { at: 0.6 }] }).bumps.length === 2, "plain lap fractions and { at } objects both load");
+  const snake = TRACKS.snake;
+  ok(snake.sand.every((c, k) => c.orig === k) && snake.gates.slice(1).every((g, k) => g.orig === k) && snake.obstacles.every((o, k) => o.orig === k),
+    "every original item knows which original it is (so the editor can reset it)");
+  ok(buildTrack("snake", { sand: [{ x: 700, y: 500, r: 50, orig: 2 }, { x: 800, y: 500, r: 50 }] }).sand.map((c) => c.orig).join() === "2,",
+    "edited items keep that link; added ones have none");
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nAll checks passed");

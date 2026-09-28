@@ -71,6 +71,7 @@ export interface SimCar {
   wrongT: number; wrongWay: boolean;
   hits: number; wallT: number;
   onOil: boolean; onSand: boolean;
+  oilK: number; sandK: number; // strength of the oil / sand under the car (0 = none)
   offRoad: boolean;     // open tracks: on the terrain, not the road
   missed: boolean;      // drove past its next checkpoint without crossing it
   boostT: number; padCool: number[];
@@ -137,7 +138,7 @@ export class Race {
         gatesPassed: 0, finished: false, finishTime: null, finishRank: 0,
         lapStart: 0, bestLap: null,
         idx: nearestIndex(track, sp.x, sp.y, 0), stuckT: 0, reverseT: 0,
-        wrongT: 0, wrongWay: false, hits: 0, wallT: 0, onOil: false, onSand: false, offRoad: false, missed: false,
+        wrongT: 0, wrongWay: false, hits: 0, wallT: 0, onOil: false, onSand: false, oilK: 0, sandK: 0, offRoad: false, missed: false,
         boostT: 0, padCool: track.boosts.map(() => 0), draftT: 0, drafting: false, topMul: 1,
         corner: sk.corner, lane: laneBase, laneTgt: laneBase, laneBase, wander: e.ai ? sk.line : 0, passT: 0,
       };
@@ -230,9 +231,11 @@ export class Race {
       // Catch-up: up to +7 % top speed when well behind the leader (full at ~1600 px).
       const gap = lead - prog.get(c)!;
       const catchUp = c.finished ? 0 : Math.min(0.07, Math.max(0, gap - 200) * 0.00005);
-      c.onOil = this.track.oil.some((o) => (c.x - o.x) ** 2 + (c.y - o.y) ** 2 < o.r * o.r);
-      c.onSand = this.track.sand.some((o) => (c.x - o.x) ** 2 + (c.y - o.y) ** 2 < o.r * o.r);
-      const sand = c.onSand ? 1 - (1 - SAND_MUL) * c.cfg.rough : 1; // monster trucks shrug sand off
+      const under = (list: { x: number; y: number; r: number; k?: number }[]) =>
+        list.reduce((k, o) => ((c.x - o.x) ** 2 + (c.y - o.y) ** 2 < o.r * o.r ? Math.max(k, o.k ?? 1) : k), 0);
+      c.oilK = under(this.track.oil); c.sandK = under(this.track.sand);
+      c.onOil = c.oilK > 0; c.onSand = c.sandK > 0;
+      const sand = c.onSand ? Math.max(0.2, 1 - (1 - SAND_MUL) * c.cfg.rough * c.sandK) : 1; // monster trucks shrug sand off
       const off = c.offRoad ? Math.max(0.25, 1 - (1 - this.track.theme.terrain.slow) * this.rough(c)) : 1;
       c.topMul = (c.boostT > 0 ? BOOST_MUL : 1) * (c.drafting ? DRAFT_MUL : 1) * (1 + catchUp) * sand * off;
     }
@@ -323,7 +326,7 @@ export class Race {
 
     // Grip pulls the velocity back in line with the heading (or tail, in reverse).
     let gr = (c.drifting ? cfg.dGrip : cfg.grip) * this.track.grip;
-    if (c.onOil) gr *= 0.25;
+    if (c.onOil) gr *= Math.max(0.05, 1 - 0.75 * c.oilK);
     if (c.offRoad) gr = (c.drifting ? cfg.dGrip : cfg.grip) * Math.max(0.15, 1 - (1 - this.track.theme.terrain.grip) * this.rough(c));
     const s2 = Math.hypot(c.vx, c.vy), sgn = c.vx * fx + c.vy * fy < 0 ? -1 : 1;
     const k = Math.min(1, gr * dt);
@@ -331,7 +334,7 @@ export class Race {
     c.vy += (fy * s2 * sgn - c.vy) * k;
 
     if (!i.throttle || c.drifting) { const fr = Math.pow(0.985, dt * 60); c.vx *= fr; c.vy *= fr; }
-    if (c.onSand) { const fr = Math.pow(1 - 0.03 * cfg.rough, dt * 60); c.vx *= fr; c.vy *= fr; }
+    if (c.onSand) { const fr = Math.pow(1 - Math.min(0.08, 0.03 * cfg.rough * c.sandK), dt * 60); c.vx *= fr; c.vy *= fr; }
     const ns = Math.hypot(c.vx, c.vy);
     if (ns > top) { const t2 = top + (ns - top) * Math.pow(0.15, dt); c.vx *= t2 / ns; c.vy *= t2 / ns; } // overspeed bleeds off smoothly
     c.speed = Math.hypot(c.vx, c.vy);
@@ -345,9 +348,9 @@ export class Race {
       if (c.padCool[k] > 0) return;
       const dx = c.x - p.x, dy = c.y - p.y, ca = Math.cos(p.a), sa = Math.sin(p.a);
       if (Math.abs(dx * ca + dy * sa) > p.len / 2 || Math.abs(-dx * sa + dy * ca) > p.w / 2) return;
-      c.boostT = BOOST_TIME;
+      c.boostT = BOOST_TIME * p.power;
       c.padCool[k] = 1.5;
-      c.vx += Math.cos(c.a) * 110; c.vy += Math.sin(c.a) * 110;
+      c.vx += Math.cos(c.a) * 110 * p.power; c.vy += Math.sin(c.a) * 110 * p.power;
       this.events.push({ k: "boost", id: c.id });
     });
   }
@@ -429,7 +432,7 @@ export class Race {
     if (c.ghost) return;
     for (const b of this.track.bumps) {
       if (!segX(c.px, c.py, c.x, c.y, b)) continue;
-      const loss = this.track.bumpLoss * Math.min(1, c.speed / 260) * (0.35 + 0.65 * c.cfg.rough);
+      const loss = (b.loss ?? this.track.bumpLoss) * Math.min(1, c.speed / 260) * (0.35 + 0.65 * c.cfg.rough);
       this.events.push({ k: "bump", x: c.x, y: c.y, imp: c.speed, id: c.id });
       if (c.speed > 150) c.hits++;
       c.vx *= 1 - loss; c.vy *= 1 - loss;

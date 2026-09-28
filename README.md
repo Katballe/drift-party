@@ -122,10 +122,19 @@ npm run dev:lan    # same, reachable from phones on your Wi-Fi: open the screen 
 build (`npm run build` / `npm run deploy`) leaves it out entirely.
 
 In the lobby press **E** (or **🛠 Track editor**). Per track you can:
-- place and remove individual items — **checkpoints** (C), **speed bumps** (B),
-  **boost pads** (P), **sand / snow** (S), **oil slicks** (O), **scenery** (T) —
-  by clicking; click an existing one with the same tool to remove it, or use the
-  **eraser** (X). Each type can be reset to the track's own layout or cleared;
+- place items — **checkpoints** (C), **speed bumps** (B), **boost pads** (P),
+  **sand / snow** (S), **oil slicks** (O), **scenery** (T) — by clicking empty
+  road/ground with that tool;
+- **select** any item by clicking it (click again to cycle through overlapping
+  ones), **drag** it to move it (checkpoints, bumps and pads slide along the
+  road), nudge it with the arrow keys, and edit all its attributes in the panel:
+  checkpoint position and its own red/white line; bump position and strength;
+  boost pad position, sideways offset, length, width and power; sand/oil size,
+  strength and position; scenery type, size and position. Duplicate, or remove
+  with Delete / the **eraser** (X);
+- **reset to the original** at every level: the selected item (↺ back to exactly
+  how the track had it; added items get default attributes), each setting (↺ next
+  to its slider), each item type, or the whole track;
 - choose the checkpoint look: flags only, or flags + a **red/white line**
   between them (the black-and-white checker is only the start / finish line) (checkpoint lines only ever span the road — cutting across the
   grass past one counts as a missed checkpoint);

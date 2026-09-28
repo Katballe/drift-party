@@ -316,7 +316,7 @@ export function drawTrack(ctx: CanvasRenderingContext2D, t: TrackDef, quick: boo
   for (const b of t.boosts) drawBoost(ctx, b.x, b.y, b.a, b.len, b.w);
   for (const b of t.bumps) drawBump(ctx, b.x1, b.y1, b.x2, b.y2);
   if (!quick) for (const g of t.gates.slice(1)) {
-    if (t.checkpointLines) drawCheckpointLine(ctx, t.pts[g.i], g.i);
+    if (g.line ?? t.checkpointLines) drawCheckpointLine(ctx, t.pts[g.i], g.i);
     drawCheckpoint(ctx, t, g);
   }
   drawChecker(ctx, t.pts[0], 11, 42); // start / finish line
@@ -430,7 +430,8 @@ function drawBoost(ctx: CanvasRenderingContext2D, x: number, y: number, a: numbe
   ctx.save(); ctx.translate(x, y); ctx.rotate(a);
   inkShape(ctx, sampleRoundRect(-len / 2, -w / 2, len, w, 6), 1, hashStr(`b${x}`), "#FFB300", INK, 2.5);
   ctx.strokeStyle = "#fff8e1"; ctx.lineWidth = 5; ctx.lineCap = "round"; ctx.lineJoin = "round";
-  for (const dx of [-12, 8]) { ctx.beginPath(); ctx.moveTo(dx - 7, -w * 0.28); ctx.lineTo(dx + 7, 0); ctx.lineTo(dx - 7, w * 0.28); ctx.stroke(); }
+  const n = Math.max(1, Math.round(len / 26)); // chevrons fill the pad, however long it is
+  for (let k = 0; k < n; k++) { const dx = -len / 2 + (len * (k + 0.5)) / n; ctx.beginPath(); ctx.moveTo(dx - 7, -w * 0.28); ctx.lineTo(dx + 7, 0); ctx.lineTo(dx - 7, w * 0.28); ctx.stroke(); }
   ctx.restore();
 }
 

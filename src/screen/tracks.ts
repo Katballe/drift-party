@@ -27,13 +27,17 @@ export interface Seg { x1: number; y1: number; x2: number; y2: number; }
 export interface Gate extends Seg {
   mx: number; my: number; nx: number; ny: number; i: number;
   flags: { x: number; y: number }[]; // one flag on each side of the road, always off the tarmac
+  line?: boolean;                    // this checkpoint's own red/white line setting (else the track's)
+  orig?: number;                     // index in the track's original (automatic) checkpoints, if it came from there
 }
-export interface Bump extends Seg { i: number; }
-export interface Circle { x: number; y: number; r: number; }
-export interface Pad { x: number; y: number; a: number; len: number; w: number; i: number; off: number; }
+export interface Bump extends Seg { i: number; loss?: number; } // own strength (else the track's bumpLoss)
+/** Sand / oil patch. `k` = strength: how much it slows (sand) or how slippery it is (oil); 1 = normal. */
+export interface Circle { x: number; y: number; r: number; k?: number; orig?: number; } // orig: index in the track's own list
+/** Boost pad; `power` scales its kick and how long the boost lasts (1 = normal). */
+export interface Pad { x: number; y: number; a: number; len: number; w: number; i: number; off: number; power: number; orig?: number; }
 export type DecoKind = "tree" | "tyres" | "crate" | "rock" | "cactus" | "pine" | "snowman" | "cone";
 /** Scenery. Just decoration behind walls; solid on an open track. */
-export interface Obstacle { x: number; y: number; r: number; s: number; kind: DecoKind; seed: number; }
+export interface Obstacle { x: number; y: number; r: number; s: number; kind: DecoKind; seed: number; orig?: number; }
 /** What's off the road: how much it slows you (top-speed factor) and how grippy it is. */
 export interface Terrain { name: string; slow: number; grip: number; }
 
@@ -52,15 +56,16 @@ export interface TrackEdit {
   walls?: boolean;        // false = open track: leave the road onto the terrain; only the screen edge is a wall
   roughness?: number;     // open tracks: how hard the terrain punishes you (1 = default)
   clutter?: number;       // open tracks: how much extra scenery near the road (1 = default, 0 = none)
-  bumps?: number[];       // speed bumps, as lap fractions (0–1 from the start line)
-  bumpLoss?: number;      // fraction of speed a bump takes at full speed
-  checkpoints?: number[]; // hand-placed checkpoints (lap fractions); omit for automatic (key corners)
+  bumps?: (number | { at: number; loss?: number })[];        // speed bumps at lap fractions (0–1 from the start line), optionally with their own strength
+  bumpLoss?: number;      // fraction of speed a bump takes at full speed (bumps without their own)
+  checkpoints?: (number | { at: number; line?: boolean; orig?: number })[]; // hand-placed checkpoints; omit for automatic (key corners)
   checkpointLines?: boolean; // draw a red/white line across the road between each checkpoint's flags
   // Hand-placed features — each list, when present, replaces the track's own:
-  boosts?: { at: number; off: number }[];                            // lap fraction + sideways offset (−1…1 of the half-width)
-  sand?: { x: number; y: number; r: number }[];                      // sand / snow patches
-  oil?: { x: number; y: number; r: number }[];                       // oil slicks
-  scenery?: { x: number; y: number; kind: DecoKind; s: number }[];   // trees, rocks… (solid on open tracks)
+  // `orig` on an item = which of the track's own items it started as (so the editor can reset it).
+  boosts?: { at: number; off: number; len?: number; w?: number; power?: number; orig?: number }[]; // lap fraction + sideways offset (−1…1 of the half-width)
+  sand?: { x: number; y: number; r: number; k?: number; orig?: number }[];  // sand / snow patches (k: how much they slow, 1 = normal)
+  oil?: { x: number; y: number; r: number; k?: number; orig?: number }[];   // oil slicks (k: how slippery, 1 = normal)
+  scenery?: { x: number; y: number; kind: DecoKind; s: number; orig?: number }[];   // trees, rocks… (solid on open tracks)
 }
 export type TrackEdits = Partial<Record<TrackId, TrackEdit>>;
 
@@ -401,34 +406,56 @@ function build(spec: Spec, edit: TrackEdit = {}): TrackDef {
   if (!clean(0)) throw new Error(`${spec.id}: start line is not on a clean stretch`);
   // Hand-placed checkpoints (from edits) replace the automatic key corners.
   // Anything unusable (a crossing, on top of the start line) is skipped.
-  const manual = Array.isArray(edit.checkpoints);
-  const picks = manual
-    ? [...new Set(edit.checkpoints!.map((f) => lapIndex(t, f)))].filter((i) => clean(i) && Math.min(i, n - i) * STEP >= 40).sort((a, b) => a - b)
-    : keyPoints(pts, clean);
-  const gates = [0, ...picks].map(makeGate);
-  const bumps: Bump[] = [...new Set((edit.bumps ?? []).map((f) => lapIndex(t, f)))].filter(clean).sort((a, b) => a - b).map((i) => {
-    const c = pts[i], r = c.hw + 2;
-    return { x1: c.x - c.nx * r, y1: c.y - c.ny * r, x2: c.x + c.nx * r, y2: c.y + c.ny * r, i };
-  });
   const clamp = (v: number | undefined, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+  const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+  // Lists along the lap accept plain lap fractions or { at, …attributes }; one item per spot.
+  const alongLap = <T extends object>(list: (number | ({ at: number } & T))[], ok: (i: number) => boolean) => {
+    const seen = new Set<number>(), out: ({ i: number } & Partial<T>)[] = [];
+    for (const v of list) {
+      const f = typeof v === "number" ? v : v?.at;
+      if (!num(f)) continue;
+      const i = lapIndex(t, f);
+      if (seen.has(i) || !ok(i)) continue;
+      seen.add(i);
+      out.push({ ...(typeof v === "object" ? v : {}), i } as { i: number } & Partial<T>);
+    }
+    return out.sort((a, b) => a.i - b.i);
+  };
+  // Hand-placed checkpoints (from edits) replace the automatic key corners.
+  // Anything unusable (a crossing, on top of the start line) is skipped.
+  const manual = Array.isArray(edit.checkpoints);
+  const picks: { i: number; line?: boolean; orig?: number }[] = manual
+    ? alongLap<{ line?: boolean; orig?: number }>(edit.checkpoints!, (i) => clean(i) && Math.min(i, n - i) * STEP >= 40)
+    : keyPoints(pts, clean).map((i, k) => ({ i, orig: k }));
+  const gates = [makeGate(0), ...picks.map((p) => ({
+    ...makeGate(p.i), ...(typeof p.line === "boolean" ? { line: p.line } : {}), ...(num(p.orig) ? { orig: p.orig } : {}),
+  }))];
+  const bumps: Bump[] = alongLap<{ loss?: number }>(edit.bumps ?? [], clean).map((b) => {
+    const c = pts[b.i], r = c.hw + 2;
+    return { x1: c.x - c.nx * r, y1: c.y - c.ny * r, x2: c.x + c.nx * r, y2: c.y + c.ny * r, i: b.i, ...(num(b.loss) ? { loss: clamp(b.loss, 0, 0.8, BUMP_LOSS) } : {}) };
+  });
   const clutter = clamp(edit.clutter, 0, 3, 1);
-  const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
-  const circles = (list: { x: number; y: number; r: number }[] | undefined, fallback: Circle[]) =>
-    Array.isArray(list) ? list.filter((o) => num(o?.x) && num(o?.y) && inBounds(o.x, o.y)).map((o) => ({ x: o.x, y: o.y, r: clamp(o.r, 10, 90, 36) })) : fallback;
-  const pad = (i: number, off: number, len = 56, w?: number): Pad => {
+  const circles = (list: { x: number; y: number; r: number; k?: number; orig?: number }[] | undefined, fallback: Circle[]) =>
+    Array.isArray(list) ? list.filter((o) => num(o?.x) && num(o?.y) && inBounds(o.x, o.y))
+      .map((o) => ({ x: o.x, y: o.y, r: clamp(o.r, 10, 90, 36), ...(num(o.k) ? { k: clamp(o.k, 0.2, 2, 1) } : {}), ...(num(o.orig) ? { orig: o.orig } : {}) }))
+      : fallback.map((c, k) => ({ ...c, orig: k }));
+  const pad = (i: number, off: number, len?: number, w?: number, power?: number): Pad => {
     const c = pts[i];
-    return { x: c.x + c.nx * off * c.hw, y: c.y + c.ny * off * c.hw, a: Math.atan2(c.ty, c.tx), len, w: w ?? Math.min(70, c.hw * 1.1), i, off };
+    return {
+      x: c.x + c.nx * off * c.hw, y: c.y + c.ny * off * c.hw, a: Math.atan2(c.ty, c.tx), i, off,
+      len: clamp(len, 24, 140, 56), w: clamp(w, 16, 100, Math.min(70, c.hw * 1.1)), power: clamp(power, 0.3, 2.5, 1),
+    };
   };
   const boosts = Array.isArray(edit.boosts)
-    ? edit.boosts.filter((b) => num(b?.at)).map((b) => pad(lapIndex(t, b.at), clamp(b.off, -0.6, 0.6, 0)))
-    : (spec.boosts ?? []).map((b) => { const p = at(b); return pad(p.i, p.off, b.len, b.w); });
+    ? edit.boosts.filter((b) => num(b?.at)).map((b) => ({ ...pad(lapIndex(t, b.at), clamp(b.off, -0.6, 0.6, 0), b.len, b.w, b.power), ...(num(b.orig) ? { orig: b.orig } : {}) }))
+    : (spec.boosts ?? []).map((b, k) => { const p = at(b); return { ...pad(p.i, p.off, b.len, b.w), orig: k }; });
   const manualScenery = Array.isArray(edit.scenery);
   const obstacles: Obstacle[] = manualScenery
     ? edit.scenery!.filter((o) => num(o?.x) && num(o?.y) && o.kind in DECO_R && inBounds(o.x, o.y)).map((o, k) => {
       const sc = clamp(o.s, 0.5, 2, 1);
-      return { x: o.x, y: o.y, s: sc, kind: o.kind, r: obstacleRadius(o.kind, sc), seed: hashStr(`${spec.id}${k}`) };
+      return { x: o.x, y: o.y, s: sc, kind: o.kind, r: obstacleRadius(o.kind, sc), seed: hashStr(`${spec.id}${k}`), ...(num(o.orig) ? { orig: o.orig } : {}) };
     })
-    : placeObstacles(spec.id, t, spec.theme.deco, open, clutter);
+    : placeObstacles(spec.id, t, spec.theme.deco, open, clutter).map((o, k) => ({ ...o, orig: k }));
 
   // Staggered 8-car grid behind the start line, alternating sides (pole on the left).
   const starts = Array.from({ length: 8 }, (_, k) => [30 + k * 26, k % 2 ? 0.32 : -0.32]).map(([back, side]) => {
