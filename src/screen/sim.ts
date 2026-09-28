@@ -7,31 +7,28 @@
 //
 // Competitive spice: boost pads, slipstream (tuck in behind a car for a little
 // extra top speed), a gentle catch-up for players well behind the leader, and
-// surfaces (oil = no grip, sand = slow, ice tracks = low grip everywhere).
+// surfaces (oil = no grip, sand = slow, ice tracks = low grip everywhere),
+// speed bumps. On an open track (walls off) the road has no walls: the
+// terrain slows you and loosens grip, the scenery is solid, and the screen
+// edge is the only hard wall.
 
-import type { CarType, PlayerId } from "../shared/protocol";
-import { constrain, nearestIndex, type Gate, type TrackDef } from "./tracks";
+import { CAR_CFGS, type CarCfg } from "../shared/cars";
+import { MAX_RACERS, type CarType, type RacerId } from "../shared/protocol";
+import { BOUNDS, constrain, nearestIndex, type Seg, type TrackDef } from "./tracks";
 
+export { CAR_CFGS, type CarCfg };
 export const STEP = 1 / 120;
 
-export interface CarCfg {
-  type: CarType;
-  spd: number;   // top speed (px/s)
-  acc: number;   // initial acceleration (px/s²); approaches spd exponentially
-  str: number;   // steering rate (rad/s at speed)
-  grip: number;  // how fast velocity re-aligns with heading (1/s)
-  dGrip: number; // grip while drifting (brake + steer)
-  mass: number;
-  w: number; h: number;
-}
-
-// Bus = slow off the line, highest top speed, lazy steering, heavy.
-// RC  = instant acceleration, lowest top speed, twitchy, light.
-// Normal = balanced. Tuned so all three lap within a few % of each other.
-export const CAR_CFGS: Record<CarType, CarCfg> = {
-  bus:    { type: "bus",    spd: 335, acc: 240, str: 2.65, grip: 8.5, dGrip: 3.2, mass: 3.0, w: 44, h: 24 },
-  rc:     { type: "rc",     spd: 300, acc: 400, str: 2.95, grip: 10,  dGrip: 2.4, mass: 0.7, w: 22, h: 14 },
-  normal: { type: "normal", spd: 318, acc: 310, str: 2.8,  grip: 9,   dGrip: 2.8, mass: 1.5, w: 32, h: 18 },
+/**
+ * Bot difficulty. `pace` scales top speed and acceleration, `corner` how hard
+ * they dare to take bends (fraction of the grip limit), `line` how sloppily
+ * they hold their line (random drift, in fractions of the half-width).
+ */
+export type BotSkill = "easy" | "normal" | "hard";
+export const BOT_SKILLS: Record<BotSkill, { pace: number; corner: number; line: number }> = {
+  easy:   { pace: 0.86, corner: 0.72, line: 0.35 },
+  normal: { pace: 0.94, corner: 0.8,  line: 0.2 },
+  hard:   { pace: 1.0,  corner: 0.86, line: 0.08 },
 };
 
 const BOOST_TIME = 1.1, BOOST_MUL = 1.32, DRAFT_MUL = 1.08, SAND_MUL = 0.6;
@@ -42,8 +39,8 @@ export function normA(a: number) {
   return a;
 }
 
-/** Does segment a→b cross the gate (inclusive)? */
-export function segX(ax: number, ay: number, bx: number, by: number, g: Gate): boolean {
+/** Does segment a→b cross the line g (inclusive)? */
+export function segX(ax: number, ay: number, bx: number, by: number, g: Seg): boolean {
   const rx = bx - ax, ry = by - ay, sx = g.x2 - g.x1, sy = g.y2 - g.y1;
   const den = rx * sy - ry * sx;
   if (Math.abs(den) < 1e-9) return false;
@@ -53,11 +50,12 @@ export function segX(ax: number, ay: number, bx: number, by: number, g: Gate): b
 }
 
 export interface Input { left: boolean; right: boolean; throttle: boolean; brake: boolean; }
-export interface Entrant { id: PlayerId; name: string; color: string; carType: CarType; ai: boolean; }
+/** `ai` = a bot (driven by the built-in driver at `skill`, default hard). */
+export interface Entrant { id: RacerId; name: string; color: string; carType: CarType; ai: boolean; skill?: BotSkill; }
 
 export interface SimCar {
-  id: PlayerId; name: string; color: string; cfg: CarCfg;
-  ai: boolean;          // driven by the built-in driver (tests / post-finish cruise)
+  id: RacerId; name: string; color: string; cfg: CarCfg;
+  ai: boolean;          // driven by the built-in driver (bots, and everyone after the finish)
   human: boolean;       // entered by a phone
   ghost: boolean;       // phone disconnected: no input, no collisions
   x: number; y: number; a: number; vx: number; vy: number;
@@ -73,18 +71,23 @@ export interface SimCar {
   wrongT: number; wrongWay: boolean;
   hits: number; wallT: number;
   onOil: boolean; onSand: boolean;
+  offRoad: boolean;     // open tracks: on the terrain, not the road
+  missed: boolean;      // drove past its next checkpoint without crossing it
   boostT: number; padCool: number[];
   draftT: number; drafting: boolean;
   topMul: number;
+  corner: number;       // driver: fraction of the grip limit it takes bends at
+  lane: number; laneTgt: number; laneBase: number; wander: number; passT: number; // driver: line across the road (−1…1 of the usable half-width)
 }
 
 export type SimEvent =
-  | { k: "hit"; x: number; y: number; imp: number; a: PlayerId; b: PlayerId }
-  | { k: "wall"; x: number; y: number; imp: number; id: PlayerId }
-  | { k: "lap"; id: PlayerId; lap: number; time: number }
-  | { k: "final"; id: PlayerId }
-  | { k: "finish"; id: PlayerId; rank: number; time: number }
-  | { k: "boost"; id: PlayerId };
+  | { k: "hit"; x: number; y: number; imp: number; a: RacerId; b: RacerId }
+  | { k: "wall"; x: number; y: number; imp: number; id: RacerId }
+  | { k: "lap"; id: RacerId; lap: number; time: number }
+  | { k: "final"; id: RacerId }
+  | { k: "finish"; id: RacerId; rank: number; time: number }
+  | { k: "boost"; id: RacerId }
+  | { k: "bump"; x: number; y: number; imp: number; id: RacerId };
 
 const NO_INPUT: Input = { left: false, right: false, throttle: false, brake: false };
 
@@ -98,10 +101,12 @@ export class Race {
 
   constructor(public track: TrackDef, entrants: Entrant[], public laps: number, rand: () => number = Math.random) {
     this.N = track.gates.length;
-    this.cars = entrants.slice(0, 4).map((e, i) => {
+    this.cars = entrants.slice(0, MAX_RACERS).map((e, i) => {
       const sp = track.starts[i];
       const cfg = { ...CAR_CFGS[e.carType] };
-      if (e.ai) { const v = 0.9 + rand() * 0.1; cfg.spd *= v; cfg.acc *= v; }
+      const sk = BOT_SKILLS[e.skill ?? "hard"];
+      const laneBase = e.ai ? (rand() - 0.5) * 2 * sk.line : 0;
+      if (e.ai) { const v = sk.pace * (0.97 + rand() * 0.03); cfg.spd *= v; cfg.acc *= v; }
       return {
         id: e.id, name: e.name, color: e.color, cfg, ai: e.ai, human: !e.ai, ghost: false,
         x: sp.x, y: sp.y, a: sp.a, vx: 0, vy: 0, px: sp.x, py: sp.y, pa: sp.a, speed: 0, fwd: 0,
@@ -109,8 +114,9 @@ export class Race {
         gatesPassed: 0, finished: false, finishTime: null, finishRank: 0,
         lapStart: 0, bestLap: null,
         idx: nearestIndex(track, sp.x, sp.y, 0), stuckT: 0, reverseT: 0,
-        wrongT: 0, wrongWay: false, hits: 0, wallT: 0, onOil: false, onSand: false,
+        wrongT: 0, wrongWay: false, hits: 0, wallT: 0, onOil: false, onSand: false, offRoad: false, missed: false,
         boostT: 0, padCool: track.boosts.map(() => 0), draftT: 0, drafting: false, topMul: 1,
+        corner: sk.corner, lane: laneBase, laneTgt: laneBase, laneBase, wander: e.ai ? sk.line : 0, passT: 0,
       };
     });
   }
@@ -121,7 +127,7 @@ export class Race {
   }
 
   /** A phone dropped (ghost) or came back. */
-  setGhost(id: PlayerId, ghost: boolean) {
+  setGhost(id: RacerId, ghost: boolean) {
     const c = this.cars.find((k) => k.id === id);
     if (!c || c.finished) return;
     c.ghost = ghost;
@@ -139,7 +145,11 @@ export class Race {
     for (const c of this.cars) this.physics(c, dt);
     this.collide();
     for (const c of this.cars) this.walls(c, dt);
-    for (const c of this.cars) { this.pads(c, dt); this.gates(c); c.idx = nearestIndex(this.track, c.x, c.y, c.idx); this.wrongWay(c, dt); }
+    for (const c of this.cars) {
+      this.pads(c, dt); this.bumps(c); this.gates(c);
+      c.idx = nearestIndex(this.track, c.x, c.y, c.idx);
+      this.wrongWay(c, dt); this.missedGate(c);
+    }
   }
 
   isOver(): boolean {
@@ -176,7 +186,8 @@ export class Race {
   // ── speed modifiers: boost, slipstream, catch-up, sand ────────────────────
   private modifiers(dt: number) {
     const prog = new Map(this.cars.map((c) => [c, this.progress(c)]));
-    const lead = Math.max(...this.cars.filter((c) => !c.ghost).map((c) => prog.get(c)!), 0);
+    const live = this.cars.filter((c) => !c.ghost);
+    const lead = live.length ? Math.max(...live.map((c) => prog.get(c)!)) : 0; // not floored at 0: nobody chases themselves
     for (const c of this.cars) {
       c.boostT = Math.max(0, c.boostT - dt);
       c.padCool = c.padCool.map((v) => Math.max(0, v - dt));
@@ -197,16 +208,20 @@ export class Race {
       const catchUp = c.finished ? 0 : Math.min(0.07, Math.max(0, gap - 200) * 0.00005);
       c.onOil = this.track.oil.some((o) => (c.x - o.x) ** 2 + (c.y - o.y) ** 2 < o.r * o.r);
       c.onSand = this.track.sand.some((o) => (c.x - o.x) ** 2 + (c.y - o.y) ** 2 < o.r * o.r);
-      c.topMul = (c.boostT > 0 ? BOOST_MUL : 1) * (c.drafting ? DRAFT_MUL : 1) * (1 + catchUp) * (c.onSand ? SAND_MUL : 1);
+      const sand = c.onSand ? 1 - (1 - SAND_MUL) * c.cfg.rough : 1; // monster trucks shrug sand off
+      const off = c.offRoad ? Math.max(0.25, 1 - (1 - this.track.theme.terrain.slow) * this.rough(c)) : 1;
+      c.topMul = (c.boostT > 0 ? BOOST_MUL : 1) * (c.drafting ? DRAFT_MUL : 1) * (1 + catchUp) * sand * off;
     }
   }
 
-  // ── built-in driver (tests, and cruising after the finish) ────────────────
+  // ── built-in driver (bots, and cruising after the finish) ─────────────────
   private drive(c: SimCar, dt: number) {
     const P = this.track.pts, n = P.length, i = c.input;
     const ahead = (dist: number) => { let j = c.idx, d = 0; while (d < dist) { j = (j + 1) % n; d += 8; } return j; };
-    const tgt = P[ahead(34 + c.speed * 0.32)];
-    const diff = normA(Math.atan2(tgt.y - c.y, tgt.x - c.x) - c.a);
+    if (!c.finished) this.pickLane(c, dt);
+    const p = P[ahead(34 + c.speed * 0.32)];
+    const off = c.finished ? 0 : c.lane * Math.max(0, p.hw - c.cfg.h * 0.6 - 10);
+    const diff = normA(Math.atan2(p.y + p.ny * off - c.y, p.x + p.nx * off - c.x) - c.a);
     if (c.finished) {
       i.left = diff < -0.06; i.right = diff > 0.06; i.brake = false;
       i.throttle = c.speed < c.cfg.spd * 0.45;
@@ -222,11 +237,38 @@ export class Race {
     // Slow for the tightest bend within braking distance.
     let maxK = 0;
     for (let j = c.idx, d = 0; d < 40 + c.speed * 0.9; d += 8) { j = (j + 1) % n; maxK = Math.max(maxK, Math.abs(P[j].k)); }
-    const turn = c.cfg.str * 1.1 * (this.track.grip < 1 ? 0.7 : 1);
-    const target = Math.min(c.cfg.spd * c.topMul, maxK > 1e-4 ? (turn / maxK) * 0.85 : Infinity);
+    const turn = c.cfg.str * 1.1 * (this.track.grip < 1 ? 0.4 + 0.6 * this.track.grip : 1);
+    let target = Math.min(c.cfg.spd * c.topMul, maxK > 1e-4 ? (turn / maxK) * c.corner : Infinity);
+    // Ease off for a speed bump coming up.
+    for (const b of this.track.bumps) if (((b.i - c.idx + n) % n) * 8 < 30 + c.speed * 0.55) target = Math.min(target, 170);
     i.left = diff < -0.04; i.right = diff > 0.04;
     i.throttle = c.speed < target;
     i.brake = c.speed > target * 1.2 && c.speed > 80;
+  }
+
+  /** Hold a line of its own (drifting slowly across the road — sloppier bots
+   *  wander more) and swing out to go round a slower car ahead. */
+  private pickLane(c: SimCar, dt: number) {
+    const hx = Math.cos(c.a), hy = Math.sin(c.a), p = this.track.pts[c.idx];
+    let block: SimCar | null = null, near = Infinity;
+    for (const o of this.cars) {
+      if (o === c || o.ghost || o.finished) continue;
+      const dx = o.x - c.x, dy = o.y - c.y, along = dx * hx + dy * hy;
+      if (along <= 0 || along > 40 + c.speed * 0.35 || along >= near) continue;
+      if (Math.abs(-dx * hy + dy * hx) > (c.cfg.h + o.cfg.h) * 0.5 + 10) continue;
+      if (o.fwd > c.fwd && along > 30) continue; // pulling away — not in the way
+      block = o; near = along;
+    }
+    if (block) {
+      // Pass on whichever side of the road the other car leaves more room.
+      const theirs = ((block.x - p.x) * p.nx + (block.y - p.y) * p.ny) / p.hw;
+      c.laneTgt = theirs > 0 ? -0.7 : 0.7;
+      c.passT = 1;
+    } else if ((c.passT -= dt) <= 0) {
+      c.laneTgt = c.laneBase + c.wander * Math.sin(this.time * 0.6 + c.id.charCodeAt(1) * 1.7);
+    }
+    c.laneTgt = Math.max(-0.7, Math.min(0.7, c.laneTgt));
+    c.lane += Math.max(-dt * 1.4, Math.min(dt * 1.4, c.laneTgt - c.lane));
   }
 
   // ── physics ───────────────────────────────────────────────────────────────
@@ -258,13 +300,14 @@ export class Race {
     // Grip pulls the velocity back in line with the heading (or tail, in reverse).
     let gr = (c.drifting ? cfg.dGrip : cfg.grip) * this.track.grip;
     if (c.onOil) gr *= 0.25;
+    if (c.offRoad) gr = (c.drifting ? cfg.dGrip : cfg.grip) * Math.max(0.15, 1 - (1 - this.track.theme.terrain.grip) * this.rough(c));
     const s2 = Math.hypot(c.vx, c.vy), sgn = c.vx * fx + c.vy * fy < 0 ? -1 : 1;
     const k = Math.min(1, gr * dt);
     c.vx += (fx * s2 * sgn - c.vx) * k;
     c.vy += (fy * s2 * sgn - c.vy) * k;
 
     if (!i.throttle || c.drifting) { const fr = Math.pow(0.985, dt * 60); c.vx *= fr; c.vy *= fr; }
-    if (c.onSand) { const fr = Math.pow(0.97, dt * 60); c.vx *= fr; c.vy *= fr; }
+    if (c.onSand) { const fr = Math.pow(1 - 0.03 * cfg.rough, dt * 60); c.vx *= fr; c.vy *= fr; }
     const ns = Math.hypot(c.vx, c.vy);
     if (ns > top) { const t2 = top + (ns - top) * Math.pow(0.15, dt); c.vx *= t2 / ns; c.vy *= t2 / ns; } // overspeed bleeds off smoothly
     c.speed = Math.hypot(c.vx, c.vy);
@@ -310,15 +353,42 @@ export class Race {
     }
   }
 
-  /** Keep the car on the road; slide along walls instead of sticking to them. */
+  /** How hard off-road terrain bites this car (monster trucks barely notice). */
+  private rough(c: SimCar) { return Math.min(1.5, c.cfg.rough * this.track.roughness); }
+
+  /**
+   * Walled track: keep the car on the road. Open track: note whether it's on
+   * the terrain and bounce it off solid scenery. Either way the screen edge is
+   * a hard wall. Cars slide along walls instead of sticking to them.
+   */
   private walls(c: SimCar, dt: number) {
     c.wallT = Math.max(0, c.wallT - dt);
-    const w = constrain(this.track, c.x, c.y, c.cfg.h * 0.6 + 2);
-    if (w.ok) return;
-    c.x = w.x; c.y = w.y;
-    const vn = c.vx * w.nx + c.vy * w.ny;
+    const t = this.track, m = c.cfg.h * 0.6 + 2;
+    if (t.walls) {
+      const w = constrain(t, c.x, c.y, m);
+      if (!w.ok) this.bounce(c, w.x, w.y, w.nx, w.ny);
+      c.offRoad = false;
+    } else {
+      c.offRoad = !constrain(t, c.x, c.y, -c.cfg.h * 0.25).ok; // centre a little past the edge
+      const cr = (c.cfg.w + c.cfg.h) * 0.25;
+      for (const o of t.obstacles) {
+        const dx = c.x - o.x, dy = c.y - o.y, d = Math.hypot(dx, dy), min = o.r + cr;
+        if (d >= min || d < 1e-6) continue;
+        this.bounce(c, o.x + (dx / d) * min, o.y + (dy / d) * min, dx / d, dy / d);
+      }
+    }
+    if (c.x < BOUNDS.x0 + m) this.bounce(c, BOUNDS.x0 + m, c.y, 1, 0);
+    if (c.x > BOUNDS.x1 - m) this.bounce(c, BOUNDS.x1 - m, c.y, -1, 0);
+    if (c.y < BOUNDS.y0 + m) this.bounce(c, c.x, BOUNDS.y0 + m, 0, 1);
+    if (c.y > BOUNDS.y1 - m) this.bounce(c, c.x, BOUNDS.y1 - m, 0, -1);
+  }
+
+  /** Put the car at (x,y) against a wall whose normal (nx,ny) points back into the open. */
+  private bounce(c: SimCar, x: number, y: number, nx: number, ny: number) {
+    c.x = x; c.y = y;
+    const vn = c.vx * nx + c.vy * ny;
     if (vn >= 0) return;
-    c.vx -= 1.3 * vn * w.nx; c.vy -= 1.3 * vn * w.ny;   // restitution 0.3
+    c.vx -= 1.3 * vn * nx; c.vy -= 1.3 * vn * ny;   // restitution 0.3
     const scrape = Math.max(0.8, 1 + vn / 1200);          // head-on hits cost more speed
     c.vx *= scrape; c.vy *= scrape;
     c.speed = Math.hypot(c.vx, c.vy);
@@ -327,6 +397,27 @@ export class Race {
       if (-vn > 90) c.hits++;
       c.wallT = 0.18;
     }
+  }
+
+  /** Driving over a speed bump costs speed — more the faster you hit it. */
+  private bumps(c: SimCar) {
+    if (c.ghost) return;
+    for (const b of this.track.bumps) {
+      if (!segX(c.px, c.py, c.x, c.y, b)) continue;
+      const loss = this.track.bumpLoss * Math.min(1, c.speed / 260) * (0.35 + 0.65 * c.cfg.rough);
+      this.events.push({ k: "bump", x: c.x, y: c.y, imp: c.speed, id: c.id });
+      if (c.speed > 150) c.hits++;
+      c.vx *= 1 - loss; c.vy *= 1 - loss;
+      c.speed = Math.hypot(c.vx, c.vy);
+    }
+  }
+
+  /** Past the next checkpoint without crossing it (cut a corner off-road): it must go back. */
+  private missedGate(c: SimCar) {
+    if (c.finished || c.ghost || c.gatesPassed === 0) { c.missed = false; return; }
+    const n = this.track.pts.length, g = this.track.gates[c.gatesPassed % this.N];
+    const past = ((c.idx - g.i + n) % n) * 8;
+    c.missed = past > 90 && past < this.track.length * 0.5;
   }
 
   private gates(c: SimCar) {

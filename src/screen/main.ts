@@ -1,34 +1,43 @@
 import QRCode from "qrcode";
 import { Net } from "../shared/net";
+import { carIcon } from "../shared/carArt";
+import { carLabel } from "../shared/cars";
 import {
   ALL_SLOTS,
-  CAR_LABELS,
+  BOT_IDS,
   CAR_TYPES,
   CLOSE_REPLACED,
   IN_BRAKE,
   IN_LEFT,
   IN_RIGHT,
   IN_THROTTLE,
+  MAX_RACERS,
   NAME_MAX,
   PLAYER_COLORS,
   ST_BOOST,
   ST_DRAFT,
   ST_FINISHED,
+  ST_MISSED,
   ST_OFFLINE,
+  ST_OFFROAD,
   ST_WRONG_WAY,
+  isBot,
   makeClientId,
   makeRoomCode,
   slotNumber,
   type AnyMessage,
+  type BotId,
   type CarType,
   type Phase,
   type PlayerId,
   type PlayerStatus,
+  type RacerId,
   type ResultRow,
   type Standing,
 } from "../shared/protocol";
+import type { DevTools } from "./dev";
 import { Renderer, ordinal } from "./render";
-import { Race, STEP, type SimCar } from "./sim";
+import { Race, STEP, type BotSkill, type Entrant, type SimCar } from "./sim";
 import { TRACKS, TRACK_ORDER, type TrackId } from "./tracks";
 
 /** A player is a connected phone. The big screen is never a player. */
@@ -37,10 +46,20 @@ interface Player {
   ready: boolean;
   connected: boolean; // false while a racing phone is reconnecting
 }
-interface Cup { tracks: TrackId[]; index: number; points: Partial<Record<PlayerId, number>>; names: Partial<Record<PlayerId, string>>; }
+/** A computer driver the host added. Bots only exist on the screen. */
+interface Bot { id: BotId; name: string; carType: CarType; }
+/** One of the 8 places on the grid: phones sit in their own slot, bots fill the empty ones. */
+type Seat = { kind: "phone"; p: Player; color: string } | { kind: "bot"; bot: Bot; color: string };
+interface Cup {
+  tracks: TrackId[]; index: number;
+  points: Partial<Record<RacerId, number>>; names: Partial<Record<RacerId, string>>; colors: Partial<Record<RacerId, string>>;
+}
 
 const LAP_OPTIONS = [2, 3, 5];
-const POINTS = [10, 7, 5, 3];
+const POINTS = [10, 8, 6, 5, 4, 3, 2, 1];
+const BOT_SKILL_LABELS: Record<BotSkill, string> = { easy: "Easy", normal: "Normal", hard: "Hard" };
+const BOT_NAMES = ["Turbo Tina", "Captain Skid", "Mr. Wobbles", "Rusty", "Zoom Zoom", "Pixel Pete", "Granny Nitro", "Sir Skidalot",
+  "Lil' Piston", "Doris Diesel", "Bumper Bob", "Nitro Nora", "Wheelie Wu", "Grip Gremlin", "Professor V8"];
 const SETTINGS_KEY = "driftparty.settings.v2";
 const ROOM_KEY = "driftparty.room";
 const RACE_PHASES: Phase[] = ["COUNTDOWN", "RACING", "PAUSED"];
@@ -59,8 +78,9 @@ const store = {
 class DriftScreen {
   phase: Phase = "LOBBY";
   pausedFrom: Phase = "RACING";
-  settings = { track: "sunny" as TrackId, laps: 3, mode: "single" as "single" | "cup" };
-  players: (Player | null)[] = [null, null, null, null];
+  settings = { track: "sunny" as TrackId, laps: 3, mode: "single" as "single" | "cup", bots: 0, botSkill: "normal" as BotSkill };
+  players: (Player | null)[] = Array(MAX_RACERS).fill(null);
+  bots: Bot[] = [];
   race: Race | null = null;
   trackId: TrackId = "sunny";
   cup: Cup | null = null;
@@ -83,6 +103,8 @@ class DriftScreen {
   lastStatus = ""; lastStatusT = 0; lastHudT = 0;
 
   els!: { lobby: HTMLElement; countdown: HTMLElement; hud: HTMLElement; results: HTMLElement };
+  /** Track editor + debug overlays — only exists in the dev build. */
+  dev: DevTools | null = null;
   html = new Map<HTMLElement, string>();
 
   // ── setup ─────────────────────────────────────────────────────────────────
@@ -92,6 +114,8 @@ class DriftScreen {
       if (saved.track in TRACKS) this.settings.track = saved.track;
       if (LAP_OPTIONS.includes(saved.laps)) this.settings.laps = saved.laps;
       if (saved.mode === "cup" || saved.mode === "single") this.settings.mode = saved.mode;
+      if (saved.botSkill in BOT_SKILL_LABELS) this.settings.botSkill = saved.botSkill;
+      for (let i = 0; i < Math.min(MAX_RACERS, Number(saved.bots) || 0); i++) this.addBot(false);
     }
     this.trackId = this.settings.track;
     this.stage = document.getElementById("stage")!;
@@ -116,7 +140,8 @@ class DriftScreen {
     document.addEventListener("fullscreenchange", () => this.renderUI());
 
     this.openRoom();
-    if (new URLSearchParams(location.search).has("debug")) (window as any).drift = this;
+    if (__DEV_TOOLS__) void import("./dev").then(({ DevTools }) => { this.dev = new DevTools(this); this.renderUI(); });
+    if (__DEV_TOOLS__ || new URLSearchParams(location.search).has("debug")) (window as any).drift = this;
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
     this.renderUI();
@@ -131,12 +156,58 @@ class DriftScreen {
     this.stage.style.fontSize = (parseFloat(c.style.width) / 1600) * 20 + "px";
   }
 
-  saveSettings() { store.set(SETTINGS_KEY, this.settings, localStorage); }
+  /** Tracks were rebuilt (dev editor): refresh what shows them. */
+  onTracksChanged(ids: TrackId[]) {
+    for (const id of ids) if (this.thumbs[id]) this.thumbs[id] = Renderer.thumbnail(TRACKS[id], 300);
+    if (ids.includes(this.trackId)) this.renderer.setTrack(TRACKS[this.trackId]);
+    this.renderUI();
+  }
+
+  saveSettings() { store.set(SETTINGS_KEY, { ...this.settings, bots: this.bots.length }, localStorage); }
   joined(): Player[] { return this.players.filter((p): p is Player => !!p); }
   player(id: PlayerId): Player | null { return this.players[slotNumber(id) - 1]; }
-  car(id: PlayerId): SimCar | undefined { return this.race?.cars.find((c) => c.id === id); }
+  car(id: RacerId): SimCar | undefined { return this.race?.cars.find((c) => c.id === id); }
   get inRace() { return RACE_PHASES.includes(this.phase); }
-  racers(): PlayerId[] { return this.race && this.phase !== "LOBBY" ? this.race.cars.map((c) => c.id) : []; }
+  /** Phone slots in the current race (bots never get phone messages). */
+  racers(): PlayerId[] { return this.race && this.phase !== "LOBBY" ? this.race.cars.filter((c) => c.human).map((c) => c.id as PlayerId) : []; }
+
+  // ── seats & bots ──────────────────────────────────────────────────────────
+  /** The 8 grid places. Phones sit in their own slot; bots fill empty seats from the back. */
+  seats(): (Seat | null)[] {
+    const seats: (Seat | null)[] = this.players.map((p, i) => (p ? { kind: "phone", p, color: PLAYER_COLORS[ALL_SLOTS[i]] } : null));
+    let b = 0;
+    for (let i = MAX_RACERS - 1; i >= 0 && b < this.bots.length; i--) {
+      if (!seats[i]) seats[i] = { kind: "bot", bot: this.bots[b++], color: PLAYER_COLORS[ALL_SLOTS[i]] };
+    }
+    return seats;
+  }
+
+  addBot(save = true) {
+    if (this.inRace || this.joined().length + this.bots.length >= MAX_RACERS) return;
+    const id = BOT_IDS.find((b) => !this.bots.some((x) => x.id === b))!;
+    const free = BOT_NAMES.filter((n) => !this.bots.some((x) => x.name === n));
+    const name = free[Math.floor(Math.random() * free.length)] ?? `Bot ${id.slice(1)}`;
+    const taken = [...this.bots.map((b) => b.carType), ...this.joined().map((p) => p.carType)];
+    const least = Math.min(...CAR_TYPES.map((t) => taken.filter((x) => x === t).length));
+    const pool = CAR_TYPES.filter((t) => taken.filter((x) => x === t).length === least);
+    this.bots.push({ id, name, carType: pool[Math.floor(Math.random() * pool.length)] });
+    if (save) this.saveSettings();
+  }
+
+  removeBot(id?: BotId) {
+    const i = id ? this.bots.findIndex((b) => b.id === id) : this.bots.length - 1;
+    if (i < 0 || this.inRace) return;
+    this.bots.splice(i, 1);
+    this.saveSettings();
+  }
+
+  /** Phones always get a seat: bots make room when the grid is full. */
+  fitBots() {
+    while (this.bots.length && this.joined().length + this.bots.length > MAX_RACERS) {
+      const b = this.bots.pop()!;
+      this.toast(`🤖 ${b.name} made room`, "#888");
+    }
+  }
 
   // ── networking ────────────────────────────────────────────────────────────
   openRoom(fresh = false) {
@@ -158,7 +229,7 @@ class DriftScreen {
     this.renderUI();
   }
 
-  controllerUrl() { return `${location.origin}/controller/?room=${encodeURIComponent(this.room.code)}`; }
+  controllerUrl() { return `${location.origin}${import.meta.env.BASE_URL}controller/?room=${encodeURIComponent(this.room.code)}`; }
 
   async refreshQR() {
     try { this.qr = await QRCode.toDataURL(this.controllerUrl(), { width: 280, margin: 1, errorCorrectionLevel: "M" }); }
@@ -170,7 +241,7 @@ class DriftScreen {
   sendPhase(to?: PlayerId) {
     this.send({
       type: "phase", playerId: to, phase: this.phase, totalLaps: this.race?.laps ?? this.settings.laps,
-      racers: this.racers(), track: TRACKS[this.trackId].name,
+      racers: this.racers(), field: this.race?.cars.length ?? 0, track: TRACKS[this.trackId].name,
       cup: this.cup ? { race: this.cup.index + 1, of: this.cup.tracks.length } : null,
     });
   }
@@ -185,6 +256,7 @@ class DriftScreen {
           ? { ...prev, connected: true }
           : { id, name: this.cup?.names[id] ?? `Player ${slotNumber(id)}`, carType: prev?.carType ?? "normal", color: PLAYER_COLORS[id], ready: false, connected: true };
         this.players[slotNumber(id) - 1] = p;
+        this.fitBots();
         if (racing) this.race!.setGhost(id, false);
         this.toast(prev && !prev.connected ? `${p.name} is back` : `${p.name} joined`, p.color);
         this.sendPhase(id);
@@ -222,7 +294,7 @@ class DriftScreen {
       }
       case "input": {
         const c = this.car(msg.playerId!);
-        if (!c || c.ghost || c.finished || this.phase === "PAUSED") break;
+        if (!c || !c.human || c.ghost || c.finished || this.phase === "PAUSED") break;
         const k = typeof msg.k === "number" ? msg.k : 0;
         c.input = { throttle: !!(k & IN_THROTTLE), brake: !!(k & IN_BRAKE), left: !!(k & IN_LEFT), right: !!(k & IN_RIGHT) };
         break;
@@ -233,7 +305,7 @@ class DriftScreen {
   // ── game flow ─────────────────────────────────────────────────────────────
   unready() { return this.joined().filter((p) => p.connected && !p.ready); }
 
-  canStart() { return this.joined().some((p) => p.connected); }
+  canStart() { return this.joined().some((p) => p.connected) || this.bots.length > 0; }
 
   /** Start a race (the next one in the cup, if a cup is running). */
   startRace(force = false) {
@@ -241,12 +313,16 @@ class DriftScreen {
     if (!force && this.phase === "LOBBY" && this.unready().length) return;
     // Drop phones that never came back.
     this.players = this.players.map((p) => (p && p.connected ? p : null));
-    if (this.phase === "LOBBY") this.cup = this.settings.mode === "cup" ? { tracks: [...TRACK_ORDER], index: 0, points: {}, names: {} } : null;
+    this.fitBots();
+    if (this.phase === "LOBBY") this.cup = this.settings.mode === "cup" ? { tracks: [...TRACK_ORDER], index: 0, points: {}, names: {}, colors: {} } : null;
     this.trackId = this.cup ? this.cup.tracks[this.cup.index] : this.settings.track;
     const track = TRACKS[this.trackId];
-    const field = this.joined();
-    if (this.cup) for (const p of field) { this.cup.names[p.id] = p.name; this.cup.points[p.id] ??= 0; }
-    this.race = new Race(track, field.map((p) => ({ id: p.id, name: p.name, color: p.color, carType: p.carType, ai: false })), this.settings.laps);
+    // Grid order = seat order: phones from the front, bots from the back.
+    const field: Entrant[] = this.seats().flatMap((s): Entrant[] => !s ? []
+      : s.kind === "phone" ? [{ id: s.p.id, name: s.p.name, color: s.color, carType: s.p.carType, ai: false }]
+      : [{ id: s.bot.id, name: s.bot.name, color: s.color, carType: s.bot.carType, ai: true, skill: this.settings.botSkill }]);
+    if (this.cup) for (const e of field) { this.cup.names[e.id] = e.name; this.cup.colors[e.id] = e.color; this.cup.points[e.id] ??= 0; }
+    this.race = new Race(track, field, this.settings.laps);
     this.renderer.setTrack(track);
     this.results = [];
     this.toasts = [];
@@ -278,7 +354,7 @@ class DriftScreen {
   standings(): Standing[] {
     if (!this.cup) return [];
     const cup = this.cup;
-    return (Object.keys(cup.points) as PlayerId[])
+    return (Object.keys(cup.points) as RacerId[])
       .map((id) => ({ id, name: cup.names[id] ?? id, points: cup.points[id] ?? 0 }))
       .sort((a, b) => b.points - a.points || (this.results.find((r) => r.id === a.id)?.rank ?? 9) - (this.results.find((r) => r.id === b.id)?.rank ?? 9));
   }
@@ -361,9 +437,9 @@ class DriftScreen {
     }
 
     if (this.phase !== "LOBBY") {
-      this.renderer.frame(race, this.phase === "RACING" ? alpha : 1, this.phase === "RACING" ? dt : 0);
+      this.renderer.frame(race, this.phase === "RACING" ? alpha : 1, this.phase === "RACING" ? dt : 0, this.dev?.raceOverlay(race));
       if (t - this.lastHudT > 150) { this.lastHudT = t; this.renderUI(); }
-    }
+    } else if (this.dev?.editing) this.renderer.frame(null, 1, 0, this.dev.editorOverlay);
     requestAnimationFrame((tt) => this.loop(tt));
   }
 
@@ -372,6 +448,7 @@ class DriftScreen {
       switch (e.k) {
         case "hit": this.renderer.sparks(e.x, e.y, e.imp); break;
         case "wall": this.renderer.dust(e.x, e.y, e.imp); break;
+        case "bump": if (e.imp > 90) this.renderer.dust(e.x, e.y, e.imp * 0.5); break;
         case "final":
           if (!this.finalLapShown) { this.finalLapShown = true; this.bannerText = "FINAL LAP!"; this.bannerUntil = performance.now() + 2200; }
           break;
@@ -392,9 +469,10 @@ class DriftScreen {
     const rnk = race.rankings();
     const p: Partial<Record<PlayerId, PlayerStatus>> = {};
     for (const c of race.cars) {
+      if (!c.human) continue; // only phones need their own status
       const flags = (c.finished ? ST_FINISHED : 0) | (c.wrongWay ? ST_WRONG_WAY : 0) | (c.boostT > 0 ? ST_BOOST : 0)
-        | (c.drafting ? ST_DRAFT : 0) | (c.ghost ? ST_OFFLINE : 0);
-      p[c.id] = [rnk.indexOf(c) + 1, race.lapOf(c), flags, c.hits];
+        | (c.drafting ? ST_DRAFT : 0) | (c.ghost ? ST_OFFLINE : 0) | (c.missed ? ST_MISSED : 0) | (c.offRoad ? ST_OFFROAD : 0);
+      p[c.id as PlayerId] = [rnk.indexOf(c) + 1, race.lapOf(c), flags, c.hits];
     }
     const body = JSON.stringify(p);
     if (!force && body === this.lastStatus) return;
@@ -405,6 +483,7 @@ class DriftScreen {
   // ── input ─────────────────────────────────────────────────────────────────
   onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement)?.tagName === "INPUT" || e.repeat) return;
+    if (this.dev?.onKey(e)) return;
     switch (e.code) {
       case "Enter": case "NumpadEnter":
         if (this.phase === "LOBBY") this.startRace();
@@ -435,6 +514,14 @@ class DriftScreen {
         this.trackId = this.settings.track;
         this.renderer.setTrack(TRACKS[this.trackId]);
         break;
+      case "addBot": this.addBot(); break;
+      case "removeBot": this.removeBot(el.dataset.bot as BotId | undefined); break;
+      case "botCar": {
+        const b = this.bots.find((x) => x.id === el.dataset.bot);
+        if (b) b.carType = CAR_TYPES[(CAR_TYPES.indexOf(b.carType) + 1) % CAR_TYPES.length];
+        break;
+      }
+      case "botSkill": this.settings.botSkill = el.dataset.skill as BotSkill; this.saveSettings(); break;
       case "start": this.startRace(); break;
       case "startAnyway": this.startRace(true); break;
       case "next": this.next(); break;
@@ -445,6 +532,7 @@ class DriftScreen {
       case "fullscreen": this.toggleFullscreen(); break;
       case "newRoom": this.openRoom(true); break;
       case "openController": window.open(this.controllerUrl(), "_blank"); break;
+      case "devOpen": this.dev?.toggle(true); break;
     }
     this.renderUI();
   }
@@ -461,7 +549,9 @@ class DriftScreen {
   renderUI() {
     if (!this.els) return;
     const ph = this.phase;
-    this.set(this.els.lobby, ph === "LOBBY" ? this.lobbyHTML() : "", ph === "LOBBY");
+    const lobby = ph === "LOBBY" && !this.dev?.editing;
+    this.set(this.els.lobby, lobby ? this.lobbyHTML() : "", lobby);
+    this.dev?.render();
     const showCount = ph === "COUNTDOWN" || ph === "PAUSED" || (ph === "RACING" && this.goT > 0);
     this.set(this.els.countdown, showCount ? this.overlayHTML() : "", showCount);
     this.set(this.els.hud, this.inRace ? this.hudHTML() : "", this.inRace);
@@ -473,24 +563,42 @@ class DriftScreen {
   }
 
   lobbyHTML() {
-    const s = this.settings, joined = this.joined(), unready = this.unready();
-    const cup = s.mode === "cup";
-    const slots = this.players.map((p, i) => {
-      const id = ALL_SLOTS[i], col = PLAYER_COLORS[id];
-      if (!p) {
-        return `<div style="flex:1;min-width:0;border:3px dashed #cfc7a8;border-radius:14px;padding:10px 12px;display:flex;align-items:center;gap:10px;color:#a39c80">
-          <div style="width:34px;height:34px;border-radius:50%;border:3px dashed ${col};flex-shrink:0;opacity:.6"></div>
-          <div style="font-size:18px;line-height:1.1">Waiting for a phone…</div></div>`;
+    const s = this.settings, joined = this.joined(), unready = this.unready(), bots = this.bots.length;
+    const cup = s.mode === "cup", full = joined.length + bots >= MAX_RACERS;
+    const icon = (t: CarType, col: string) => `<img src="${carIcon(t, col, 72)}" alt="" style="width:54px;height:32px;flex-shrink:0;display:block" />`;
+    const small = "border:2px solid #ddd;background:#fff;color:#444;border-radius:9px;font-size:17px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;padding:3px 10px";
+    const seats = this.seats().map((seat, i) => {
+      const col = PLAYER_COLORS[ALL_SLOTS[i]];
+      if (!seat) {
+        return `<div style="min-width:0;border:3px dashed #cfc7a8;border-radius:14px;padding:8px 10px;display:flex;align-items:center;gap:9px;color:#a39c80">
+          <div style="width:30px;height:30px;border-radius:50%;border:3px dashed ${col};flex-shrink:0;opacity:.6"></div>
+          <div style="font-size:17px;line-height:1.1">Waiting for a phone…</div></div>`;
       }
-      const pill = p.ready ? `<span style="background:#4CAF50;color:#fff;border-radius:12px;padding:2px 10px;font-size:15px">✓ Ready</span>`
-        : `<span style="background:#eee;color:#999;border-radius:12px;padding:2px 10px;font-size:15px">Not ready</span>`;
-      return `<div style="flex:1;min-width:0;background:#fff;border-radius:14px;padding:10px 12px;border-left:6px solid ${col};box-shadow:0 2px 7px rgba(0,0,0,0.06);display:flex;align-items:center;gap:10px;animation:fadeIn .3s">
-        <div style="width:34px;height:34px;border-radius:50%;background:${col};color:#fff;font-size:18px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${i + 1}</div>
+      const card = (badge: string, name: string, sub: string, right: string) => `<div style="position:relative;min-width:0;background:#fff;border-radius:14px;padding:7px 10px;border-left:6px solid ${col};box-shadow:0 2px 7px rgba(0,0,0,0.06);display:flex;align-items:center;gap:8px;animation:fadeIn .3s">
+        <div style="width:30px;height:30px;border-radius:50%;background:${col};color:#fff;font-size:17px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${badge}</div>
         <div style="min-width:0;flex:1">
-          <div style="font-size:21px;font-weight:700;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.name)}</div>
-          <div style="display:flex;align-items:center;gap:6px;font-size:15px;color:#888">${CAR_LABELS[p.carType]} ${pill}</div>
-        </div></div>`;
+          <div style="font-size:20px;font-weight:700;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15">${name}</div>
+          <div style="font-size:15px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15">${sub}</div>
+        </div>${right}</div>`;
+      if (seat.kind === "phone") {
+        const p = seat.p;
+        const ready = p.ready ? `<span style="color:#2E7D32;font-weight:700">✓ Ready</span>` : `<span style="color:#b8b196">not ready</span>`;
+        return card(String(i + 1), esc(p.name), `${carLabel(p.carType)} · ${ready}`, icon(p.carType, col));
+      }
+      const b = seat.bot;
+      return card("🤖", esc(b.name),
+        `<button data-action="botCar" data-bot="${b.id}" title="Change car" style="border:none;background:none;padding:0;font:inherit;color:#6b6450;cursor:pointer;text-decoration:underline dotted">${carLabel(b.carType)} ⟳</button>`,
+        `<button data-action="botCar" data-bot="${b.id}" title="Change car" style="border:none;background:none;padding:0;cursor:pointer;flex-shrink:0">${icon(b.carType, col)}</button>
+         <button data-action="removeBot" data-bot="${b.id}" title="Remove bot" aria-label="Remove ${esc(b.name)}" style="position:absolute;top:1px;right:5px;border:none;background:none;color:#b8b196;font-size:18px;line-height:1;cursor:pointer;padding:0 2px">×</button>`);
     }).join("");
+    const who = `${joined.length} phone${joined.length === 1 ? "" : "s"}${bots ? ` + ${bots} bot${bots === 1 ? "" : "s"}` : ""} · up to ${MAX_RACERS}`;
+    const botCtl = `<div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:18px;color:#888;margin-right:2px">🤖 Bots</span>
+        ${(Object.keys(BOT_SKILL_LABELS) as BotSkill[]).map((k) => `<button data-action="botSkill" data-skill="${k}" title="Bot skill" style="${small};${s.botSkill === k ? "background:#1a2a0a;border-color:#1a2a0a;color:#fff" : ""}">${BOT_SKILL_LABELS[k]}</button>`).join("")}
+        <span style="width:6px"></span>
+        <button data-action="removeBot" ${bots ? "" : "disabled"} title="Remove a bot" style="${small};${bots ? "" : "opacity:.4;cursor:default"}">−</button>
+        <button data-action="addBot" ${full ? "disabled" : ""} title="${full ? "The grid is full" : "Add a computer driver"}" style="${small};${full ? "opacity:.4;cursor:default" : "background:#1a2a0a;border-color:#1a2a0a;color:#FFD600"}">+ Add bot</button>
+      </div>`;
     const tracks = TRACK_ORDER.map((id, i) => {
       const t = TRACKS[id], on = cup || s.track === id;
       const img = this.thumbs[id] ? `<img src="${this.thumbs[id]}" alt="" style="width:100%;display:block;border-radius:8px" />` : `<div style="aspect-ratio:16/9;background:#ddd;border-radius:8px"></div>`;
@@ -501,16 +609,16 @@ class DriftScreen {
           <span style="font-size:13px;color:#c0392b;letter-spacing:1px">${"●".repeat(t.difficulty)}<span style="color:#ddd">${"●".repeat(3 - t.difficulty)}</span></span>
         </div></button>`;
     }).join("");
-    const tag = cup ? "All five tracks in a row — 10 / 7 / 5 / 3 points per race. Most points wins the cup!" : TRACKS[s.track].tag;
+    const tag = cup ? `All five tracks in a row — ${POINTS.join(" / ")} points per race. Most points wins the cup!` : TRACKS[s.track].tag;
     const seg = (action: string, key: string, val: string | number, label: string, on: boolean) =>
       `<button data-action="${action}" data-${key}="${val}" style="padding:7px 14px;border:2px solid ${on ? "#E63946" : "#ddd"};background:${on ? "#E63946" : "#fff"};color:${on ? "#fff" : "#444"};border-radius:9px;font-size:19px;font-weight:700;font-family:Caveat,cursive;cursor:pointer">${label}</button>`;
     const relay = this.relay === "online" ? ["#4CAF50", "Online — phones can join"]
       : this.relay === "replaced" ? ["#E63946", "Open in another tab"] : ["#FFB300", "Connecting to server…"];
     const qr = this.qr ? `<img src="${this.qr}" alt="QR code to join" style="width:150px;height:150px;image-rendering:pixelated" />` : `<div style="color:#999;font-size:13px">…</div>`;
-    let startLabel = "START RACE ▶", enabled = true;
-    if (!joined.length) { startLabel = "Waiting for players…"; enabled = false; }
+    let startLabel = cup ? "START CUP ▶" : "START RACE ▶", enabled = true;
+    if (!joined.length && !bots) { startLabel = "Waiting for players…"; enabled = false; }
     else if (unready.length) { startLabel = `Waiting for ${unready.length} to ready up…`; enabled = false; }
-    else if (cup) startLabel = "START CUP ▶";
+    else if (!joined.length) startLabel = cup ? "WATCH A BOT CUP ▶" : "WATCH THE BOTS ▶";
     const startStyle = enabled ? "background:#FFD600;color:#1a2a0a;box-shadow:0 4px 0 #b8920a" : "background:#cfc7a8;color:#6b6450;box-shadow:0 4px 0 #a39c80;cursor:default";
 
     return `<div style="position:absolute;inset:0;background:#f0ede4;display:flex;flex-direction:column;z-index:10">
@@ -521,6 +629,7 @@ class DriftScreen {
         </div>
         <div style="display:flex;gap:8px">
           ${this.btn("fullscreen", document.fullscreenElement ? "⤡ Exit fullscreen" : "⛶ Fullscreen", "padding:9px 14px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);font-size:16px")}
+          ${__DEV_TOOLS__ && this.dev ? this.btn("devOpen", "🛠 Track editor (E)", "padding:9px 14px;background:#FFD600;color:#1a2a0a;font-size:16px") : ""}
           ${this.btn("openController", "Test controller ↗", "padding:9px 14px;background:#E63946;color:#fff;font-size:16px")}
         </div>
       </div>
@@ -531,7 +640,7 @@ class DriftScreen {
             <div style="width:150px;height:150px;margin:6px auto 0;display:flex;align-items:center;justify-content:center">${qr}</div>
             <div style="margin-top:6px;font-size:11px;color:#aaa;letter-spacing:1px;font-family:sans-serif">ROOM CODE</div>
             <div style="font-size:36px;font-weight:700;color:#222;letter-spacing:5px;line-height:1.05">${esc(this.room.code)}</div>
-            <div style="font-size:12px;color:#999;font-family:sans-serif">${esc(location.host)}/controller</div>
+            <div style="font-size:12px;color:#999;font-family:sans-serif">${esc(location.host + import.meta.env.BASE_URL)}controller</div>
             <div style="margin-top:6px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:15px;color:#666">
               <span style="width:9px;height:9px;border-radius:50%;background:${relay[0]};display:inline-block"></span>${relay[1]}</div>
             ${this.relay === "replaced" ? this.btn("newRoom", "Start a new room here", "margin-top:8px;padding:6px 12px;background:#E63946;color:#fff;font-size:15px") : ""}
@@ -539,8 +648,11 @@ class DriftScreen {
         </div>
         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:14px">
           <div>
-            <div style="font-size:22px;font-weight:700;color:#333;margin-bottom:6px">Racers <span style="font-size:16px;color:#999;font-weight:400">· up to 4 phones</span></div>
-            <div style="display:flex;gap:10px">${slots}</div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
+              <div style="font-size:22px;font-weight:700;color:#333;white-space:nowrap">Racers <span style="font-size:16px;color:#999;font-weight:400">· ${who}</span></div>
+              ${botCtl}
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">${seats}</div>
           </div>
           <div style="flex:1;min-height:0">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
@@ -593,9 +705,10 @@ class DriftScreen {
     const race = this.race;
     if (!race) return "";
     const rnk = race.rankings(), leaderLap = race.lapOf(rnk[0]), t = TRACKS[this.trackId];
-    const chips = rnk.map((c, i) => `<div style="display:flex;align-items:center;gap:.3em;background:${c.ghost ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.14)"};border-radius:.8em;padding:.1em .6em .1em .25em;opacity:${c.ghost ? 0.55 : 1};white-space:nowrap">
+    const compact = rnk.length > 4; // a big field needs slimmer chips to fit the bar
+    const chips = rnk.map((c, i) => `<div style="display:flex;align-items:center;gap:.3em;background:${c.ghost ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.14)"};border-radius:.8em;padding:.1em ${compact ? ".45em" : ".6em"} .1em .25em;opacity:${c.ghost ? 0.55 : 1};white-space:nowrap;flex-shrink:0;${compact && c.finished ? "box-shadow:inset 0 0 0 .12em #FFD600" : ""}">
         <span style="width:1.3em;height:1.3em;border-radius:50%;background:${c.color};color:#fff;font-size:.85em;font-weight:700;display:inline-flex;align-items:center;justify-content:center">${i + 1}</span>
-        <span style="max-width:6.5em;overflow:hidden;text-overflow:ellipsis">${c.ghost ? "📵 " : ""}${esc(c.name)}</span>${c.finished ? `<span style="color:#FFD600">🏁 ${fmtT(c.finishTime!)}</span>` : ""}</div>`).join("");
+        <span style="max-width:${compact ? "4.6em" : "6.5em"};overflow:hidden;text-overflow:ellipsis">${c.ghost ? "📵 " : c.human ? "" : "🤖"}${esc(c.name)}</span>${c.finished && !compact ? `<span style="color:#FFD600">🏁 ${fmtT(c.finishTime!)}</span>` : ""}</div>`).join("");
     const now = performance.now();
     this.toasts = this.toasts.filter((x) => x.until > now);
     const toasts = this.toasts.map((x) => `<div style="background:rgba(0,0,0,0.8);color:#fff;border-left:.3em solid ${x.color};padding:.25em .8em;border-radius:.5em;font-size:1.1em;animation:fadeIn .25s">${esc(x.text)}</div>`).join("");
@@ -608,7 +721,7 @@ class DriftScreen {
           <div style="font-size:.7em;color:rgba(255,255,255,0.5);letter-spacing:.1em;font-family:sans-serif">LAP</div>
           <div style="font-size:1.6em;font-weight:700;color:${leaderLap === race.laps ? "#FF5252" : "#fff"}">${leaderLap}/${race.laps}</div></div>
         <div style="font-size:1.4em;font-weight:700;color:#FFD600;min-width:3.6em">${fmtT(race.time)}</div>
-        <div style="flex:1;display:flex;gap:.5em;overflow:hidden;font-size:1.15em">${chips}</div>
+        <div style="flex:1;display:flex;gap:${compact ? ".3em" : ".5em"};overflow:hidden;font-size:${compact ? ".95em" : "1.15em"}">${chips}</div>
         <button data-action="pause" title="Pause (Esc)" style="background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:.5em;padding:.2em .7em;font-size:1em;font-family:Caveat,cursive;font-weight:700;cursor:pointer">⏸ Pause</button>
       </div>
       <div style="position:absolute;bottom:.8em;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:.3em;z-index:12;pointer-events:none">${toasts}</div>
@@ -617,28 +730,31 @@ class DriftScreen {
 
   resultsHTML() {
     const t = TRACKS[this.trackId], bestLap = Math.min(...this.results.map((r) => r.best ?? Infinity));
+    const big = this.results.length > 4; // tighter rows so 8 racers fit without scrolling
     const rows = this.results.map((r) => {
-      const col = PLAYER_COLORS[r.id], car = this.car(r.id);
-      return `<div style="display:flex;align-items:center;gap:14px;margin-bottom:8px;padding:8px 14px;background:#fff;border-radius:12px;border-left:6px solid ${col}">
-        <div style="font-size:30px;font-weight:700;color:${r.rank === 1 ? "#E6A700" : "#bbb"};width:36px;text-align:center">${r.rank === 1 ? "🏆" : r.rank}</div>
+      const car = this.car(r.id), col = car?.color ?? "#999";
+      return `<div style="display:flex;align-items:center;gap:${big ? 10 : 14}px;margin-bottom:${big ? 5 : 8}px;padding:${big ? "4px 12px" : "8px 14px"};background:#fff;border-radius:12px;border-left:6px solid ${col}">
+        <div style="font-size:${big ? 24 : 30}px;font-weight:700;color:${r.rank === 1 ? "#E6A700" : "#bbb"};width:34px;text-align:center">${r.rank === 1 ? "🏆" : r.rank}</div>
+        ${car ? `<img src="${carIcon(car.cfg.type, col, 72)}" alt="" style="width:${big ? 44 : 54}px;flex-shrink:0" />` : ""}
         <div style="flex:1;min-width:0">
-          <div style="font-size:23px;font-weight:700;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.name)}</div>
-          <div style="font-size:14px;color:#999">${car ? CAR_LABELS[car.cfg.type] : ""}${r.best === bestLap ? ` · <span style="color:#7B1FA2">⏱ fastest lap</span>` : ""}</div>
+          <div style="font-size:${big ? 20 : 23}px;font-weight:700;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15">${isBot(r.id) ? "🤖 " : ""}${esc(r.name)}</div>
+          <div style="font-size:14px;color:#999;line-height:1.15">${car ? carLabel(car.cfg.type) : ""}${r.best === bestLap ? ` · <span style="color:#7B1FA2">⏱ fastest lap</span>` : ""}</div>
         </div>
         <div style="text-align:right">
-          <div style="font-size:23px;font-weight:700;color:#333">${r.time !== null ? fmtT(r.time) : "DNF"}</div>
+          <div style="font-size:${big ? 20 : 23}px;font-weight:700;color:#333;line-height:1.15">${r.time !== null ? fmtT(r.time) : "DNF"}</div>
           <div style="font-size:13px;color:#999;font-family:sans-serif">best ${r.best !== null ? fmtT(r.best) : "—"}</div>
         </div>
-        ${this.cup ? `<div style="font-size:22px;font-weight:700;color:#2E7D32;width:52px;text-align:right">+${r.pts}</div>` : ""}
+        ${this.cup ? `<div style="font-size:${big ? 20 : 22}px;font-weight:700;color:#2E7D32;width:46px;text-align:right">+${r.pts}</div>` : ""}
       </div>`;
     }).join("");
     let standings = "", title = "RACE OVER!", buttons: string;
     if (this.cup) {
-      const st = this.standings();
-      standings = `<div style="margin-top:14px;font-size:24px;font-weight:700;color:#1a2a0a">${this.cupDone ? "🏆 Final cup standings" : `Cup standings · after race ${this.cup.index + 1} of ${this.cup.tracks.length}`}</div>
-        ${st.map((s, i) => `<div style="display:flex;align-items:center;gap:10px;padding:4px 10px;font-size:21px;color:#333">
-          <span style="width:26px;color:#999">${i + 1}.</span><span style="width:12px;height:12px;border-radius:50%;background:${PLAYER_COLORS[s.id]}"></span>
-          <span style="flex:1">${esc(s.name)}${this.cupDone && i === 0 ? " 👑" : ""}</span><b>${s.points} pts</b></div>`).join("")}`;
+      const st = this.standings(), cup = this.cup;
+      standings = `<div style="margin-top:12px;font-size:24px;font-weight:700;color:#1a2a0a">${this.cupDone ? "🏆 Final cup standings" : `Cup standings · after race ${cup.index + 1} of ${cup.tracks.length}`}</div>
+        <div style="display:grid;grid-template-columns:${st.length > 4 ? "1fr 1fr" : "1fr"};grid-auto-flow:${st.length > 4 ? "column" : "row"};grid-template-rows:repeat(${st.length > 4 ? Math.ceil(st.length / 2) : st.length},auto);column-gap:18px">
+        ${st.map((s, i) => `<div style="display:flex;align-items:center;gap:10px;padding:3px 10px;font-size:${big ? 19 : 21}px;color:#333;min-width:0">
+          <span style="width:26px;color:#999">${i + 1}.</span><span style="width:12px;height:12px;border-radius:50%;flex-shrink:0;background:${cup.colors[s.id] ?? "#999"}"></span>
+          <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${isBot(s.id) ? "🤖 " : ""}${esc(s.name)}${this.cupDone && i === 0 ? " 👑" : ""}</span><b style="white-space:nowrap">${s.points} pts</b></div>`).join("")}</div>`;
       if (this.cupDone) title = `${esc(st[0]?.name ?? "")} WINS THE CUP!`;
       const nextName = this.cupDone ? "" : TRACKS[this.cup.tracks[this.cup.index + 1]].name;
       buttons = this.cupDone
@@ -650,7 +766,7 @@ class DriftScreen {
         + this.btn("next", "Race again (Enter) ▶", "padding:12px 30px;background:#FFD600;color:#1a2a0a;font-size:21px;box-shadow:0 4px 0 #b8920a");
     }
     return `<div style="position:absolute;inset:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px">
-      <div style="background:#f0ede4;border-radius:20px;padding:26px 36px;width:min(700px,100%);max-height:100%;overflow:auto;box-shadow:0 10px 50px rgba(0,0,0,0.55)">
+      <div style="background:#f0ede4;border-radius:20px;padding:${big ? "18px 30px" : "26px 36px"};width:min(${big ? 760 : 700}px,100%);max-height:100%;overflow:auto;box-shadow:0 10px 50px rgba(0,0,0,0.55)">
         <div style="font-size:48px;font-weight:700;color:#1a2a0a;text-align:center;line-height:1">${title}</div>
         <div style="font-size:17px;color:#999;text-align:center;margin:6px 0 18px">${esc(t.name)} · ${this.race?.laps} laps</div>
         ${rows}${standings}

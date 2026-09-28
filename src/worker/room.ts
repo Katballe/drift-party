@@ -32,7 +32,8 @@ const MAX_SCREEN_MSG = 8192;
 const CONTROLLER_RATE = 60;      // msgs/second per phone before we start dropping
 
 /**
- * One Room = one game screen (host) + up to four phone controllers.
+ * One Room = one game screen (host) + up to eight phone controllers. (Bots are
+ * simulated on the screen; the relay never sees them.)
  *
  * The room is addressed by its code via `idFromName(code)`, so every client that
  * knows the code lands on the same Durable Object instance. The DO is a small
@@ -157,7 +158,7 @@ export class Room extends DurableObject<Env> {
     if (msg.playerId) {
       const c = this.controllers().find((w) => this.att(w)?.playerId === msg.playerId);
       if (c) this.sendRaw(c, message);
-      return; // a playerId with no phone (keyboard/AI) → drop
+      return; // a playerId with no phone attached → drop
     }
     for (const c of this.controllers()) this.sendRaw(c, message);
   }

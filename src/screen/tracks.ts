@@ -1,8 +1,17 @@
 // Track geometry. A track is a closed centerline (smooth spline through
 // control points, or a parametric curve) with a half-width at every point.
 // Everything else is derived from it: walls (distance from the centerline),
-// ordered checkpoint gates, the start grid, and feature placement. Pure data +
-// math, no DOM, so tracks can be validated headlessly.
+// ordered checkpoint gates, the start grid, feature placement and the scenery
+// (which is solid on open tracks). Pure data + math, no DOM, so tracks can be
+// validated headlessly.
+//
+// Tracks can be tuned without touching the specs below: a TrackEdit per track
+// (grip, walls on/off, speed bumps, hand-placed checkpoints, off-road
+// penalties) comes from track-edits.json, and the dev build's track editor
+// layers its own draft edits on top (applyTrackEdits).
+
+import { hashStr, rng } from "../shared/sketch";
+import COMMITTED_EDITS from "./track-edits.json";
 
 export type TrackId = "sunny" | "junkyard" | "snake" | "frosty" | "hairpin";
 
@@ -13,10 +22,17 @@ export interface CenterPt {
   nx: number; ny: number;           // unit normal (to the driver's right)
   k: number;                        // signed curvature (+ = right-hand bend)
 }
-export interface Gate { x1: number; y1: number; x2: number; y2: number; mx: number; my: number; nx: number; ny: number; i: number; }
+/** A line segment (gates and speed bumps are lines across the road). */
+export interface Seg { x1: number; y1: number; x2: number; y2: number; }
+export interface Gate extends Seg { mx: number; my: number; nx: number; ny: number; i: number; }
+export interface Bump extends Seg { i: number; }
 export interface Circle { x: number; y: number; r: number; }
 export interface Pad { x: number; y: number; a: number; len: number; w: number; }
 export type DecoKind = "tree" | "tyres" | "crate" | "rock" | "cactus" | "pine" | "snowman" | "cone";
+/** Scenery. Just decoration behind walls; solid on an open track. */
+export interface Obstacle { x: number; y: number; r: number; s: number; kind: DecoKind; seed: number; }
+/** What's off the road: how much it slows you (top-speed factor) and how grippy it is. */
+export interface Terrain { name: string; slow: number; grip: number; }
 
 export interface Theme {
   ground: [string, string, string];  // base, dark, light
@@ -24,17 +40,41 @@ export interface Theme {
   kerb: [string, string];
   deco: DecoKind[];
   label: string;
+  terrain: Terrain;
 }
+
+/** Tunables layered over a track's spec (track-edits.json + the dev editor). */
+export interface TrackEdit {
+  grip?: number;          // road grip (1 = tarmac, ice tracks ~0.5)
+  walls?: boolean;        // false = open track: leave the road onto the terrain; only the screen edge is a wall
+  roughness?: number;     // open tracks: how hard the terrain punishes you (1 = default)
+  clutter?: number;       // open tracks: how much extra scenery near the road (1 = default, 0 = none)
+  bumps?: number[];       // speed bumps, as lap fractions (0–1 from the start line)
+  bumpLoss?: number;      // fraction of speed a bump takes at full speed
+  checkpoints?: number[]; // hand-placed checkpoints (lap fractions); omit for automatic (key corners)
+}
+export type TrackEdits = Partial<Record<TrackId, TrackEdit>>;
 
 export interface TrackDef {
   id: TrackId; name: string; tag: string; difficulty: 1 | 2 | 3;
   pts: CenterPt[]; length: number;
   gates: Gate[];
+  autoGates: boolean;    // checkpoints were found automatically (not hand-placed)
   starts: { x: number; y: number; a: number }[];
   oil: Circle[]; sand: Circle[]; boosts: Pad[];
+  bumps: Bump[]; bumpLoss: number;
+  obstacles: Obstacle[];
   grip: number;          // surface grip multiplier (ice < 1)
+  baseGrip: number;      // the grip the spec ships with (before edits)
+  walls: boolean;
+  roughness: number; clutter: number;
   theme: Theme;
 }
+
+/** Hard screen boundary for cars (logical 1600×900; the top strip is under the HUD). */
+export const BOUNDS = { x0: 8, y0: 70, x1: 1592, y1: 892 };
+export const BUMP_LOSS = 0.35;
+const GATE_REACH = 260;     // open tracks: checkpoint lines reach this far past the road edge
 
 const STEP = 8;             // centerline sample spacing (px)
 const BEND_K = 1 / 450;     // a bend peaks tighter than a 450 px radius…
@@ -259,12 +299,56 @@ interface Spec {
   oil?: (Place & { r: number })[]; sand?: (Place & { r: number })[]; boosts?: (Place & { len?: number; w?: number })[];
 }
 
-function build(spec: Spec): TrackDef {
+const round4 = (v: number) => Math.round(v * 1e4) / 1e4;
+/** Centerline index ↔ lap fraction (what edits store, so they survive resampling). */
+export const lapFraction = (t: { pts: CenterPt[] }, i: number) => round4(i / t.pts.length);
+export const lapIndex = (t: { pts: CenterPt[] }, f: number) => { const n = t.pts.length; return ((Math.round(f * n) % n) + n) % n; };
+
+/** Distance from (x,y) to the nearest road edge (negative = on the road). */
+export function edgeGap(t: { pts: CenterPt[] }, x: number, y: number): number {
+  let best = Infinity;
+  for (let j = 0; j < t.pts.length; j += 2) { const p = t.pts[j]; best = Math.min(best, Math.hypot(p.x - x, p.y - y) - p.hw); }
+  return best;
+}
+
+/** Could a line across the road at index i be a checkpoint / bump? (Not where the road crosses itself.) */
+export function lineIsClean(t: { pts: CenterPt[] }, i: number): boolean {
+  const c = t.pts[i], r = c.hw + 12;
+  for (let k = 0; k <= 6; k++) {
+    const f = k / 6 * 2 - 1, x = c.x + c.nx * r * f, y = c.y + c.ny * r * f;
+    if (onOtherPart(t, x, y, i, 10)) return false;
+  }
+  return true;
+}
+
+const inBounds = (x: number, y: number) => x > BOUNDS.x0 && x < BOUNDS.x1 && y > BOUNDS.y0 && y < BOUNDS.y1;
+const DECO_R: Record<DecoKind, number> = { tree: 19, pine: 15, rock: 15, cactus: 9, snowman: 11, tyres: 16, crate: 14, cone: 7 };
+
+/** Scenery, placed deterministically. Open tracks get extra near the road to make leaving it costly. */
+function placeObstacles(id: TrackId, t: { pts: CenterPt[] }, kinds: DecoKind[], open: boolean, clutter: number): Obstacle[] {
+  const r = rng(hashStr(`${id}:scenery`)), out: Obstacle[] = [];
+  const pass = (count: number, maxGap: number, spacing: number, tries: number) => {
+    for (let k = 0, placed = 0; k < tries && placed < count; k++) {
+      const x = BOUNDS.x0 + 30 + r() * (BOUNDS.x1 - BOUNDS.x0 - 60), y = BOUNDS.y0 + 22 + r() * (BOUNDS.y1 - BOUNDS.y0 - 44);
+      const kind = kinds[out.length % kinds.length], s = 0.8 + r() * 0.5, rad = DECO_R[kind] * s;
+      const gap = edgeGap(t, x, y);
+      if (gap < rad + 12 || gap > maxGap || out.some((o) => Math.hypot(o.x - x, o.y - y) < spacing)) continue;
+      out.push({ x, y, r: rad * 0.85, s, kind, seed: hashStr(`${id}${out.length}`) });
+      placed++;
+    }
+  };
+  pass(30, Infinity, 70, 400);
+  if (open && clutter > 0) pass(Math.round(22 * clutter), 120, 50, 1500);
+  return out;
+}
+
+function build(spec: Spec, edit: TrackEdit = {}): TrackDef {
   let raw: { x: number; y: number; hw: number }[], cpS: number[] = [];
   if (spec.cps) ({ pts: raw, cpS } = spline(spec.cps));
   else raw = curve(spec.curve!.f, spec.curve!.hw);
   const pts = annotate(raw), n = pts.length, length = n * STEP;
   const t = { pts } as TrackDef;
+  const open = edit.walls === false;
 
   const at = (p: Place) => {
     const s = (p.cp !== undefined ? cpS[p.cp] : (p.at ?? 0) * length) + (p.ds ?? 0);
@@ -274,34 +358,57 @@ function build(spec: Spec): TrackDef {
     return { i, c, x: c.x + c.nx * off * c.hw, y: c.y + c.ny * off * c.hw };
   };
 
-  const makeGate = (i: number): Gate => {
-    const c = pts[i], r = c.hw + 12;
-    return { x1: c.x - c.nx * r, y1: c.y - c.ny * r, x2: c.x + c.nx * r, y2: c.y + c.ny * r, mx: c.x, my: c.y, nx: c.tx, ny: c.ty, i };
-  };
-  const clean = (i: number) => {
-    const g = makeGate(i);
-    for (let k = 0; k <= 6; k++) {
-      const f = k / 6, x = g.x1 + (g.x2 - g.x1) * f, y = g.y1 + (g.y2 - g.y1) * f;
-      if (onOtherPart(t, x, y, i, 10)) return false;
+  // On an open track a checkpoint line reaches well off the road (until it would
+  // touch another stretch of road or the screen edge), so cutting a corner
+  // across the grass still has to cross it.
+  const reach = (i: number, side: number) => {
+    const c = pts[i];
+    let r = c.hw + 12;
+    if (!open) return r;
+    while (r < c.hw + GATE_REACH) {
+      const x = c.x + c.nx * side * (r + 8), y = c.y + c.ny * side * (r + 8);
+      if (!inBounds(x, y) || onOtherPart(t, x, y, i, 6)) break;
+      r += 8;
     }
-    return true;
+    return r;
   };
+  const makeGate = (i: number): Gate => {
+    const c = pts[i], a = reach(i, -1), b = reach(i, 1);
+    return { x1: c.x - c.nx * a, y1: c.y - c.ny * a, x2: c.x + c.nx * b, y2: c.y + c.ny * b, mx: c.x, my: c.y, nx: c.tx, ny: c.ty, i };
+  };
+  const clean = (i: number) => lineIsClean(t, i);
   if (!clean(0)) throw new Error(`${spec.id}: start line is not on a clean stretch`);
-  const gates = [0, ...keyPoints(pts, clean)].map(makeGate);
+  // Hand-placed checkpoints (from edits) replace the automatic key corners.
+  // Anything unusable (a crossing, on top of the start line) is skipped.
+  const manual = Array.isArray(edit.checkpoints);
+  const picks = manual
+    ? [...new Set(edit.checkpoints!.map((f) => lapIndex(t, f)))].filter((i) => clean(i) && Math.min(i, n - i) * STEP >= 40).sort((a, b) => a - b)
+    : keyPoints(pts, clean);
+  const gates = [0, ...picks].map(makeGate);
+  const bumps: Bump[] = [...new Set((edit.bumps ?? []).map((f) => lapIndex(t, f)))].filter(clean).sort((a, b) => a - b).map((i) => {
+    const c = pts[i], r = c.hw + 2;
+    return { x1: c.x - c.nx * r, y1: c.y - c.ny * r, x2: c.x + c.nx * r, y2: c.y + c.ny * r, i };
+  });
+  const clamp = (v: number | undefined, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+  const clutter = clamp(edit.clutter, 0, 3, 1);
 
-  // 2×2 grid behind the start line.
-  const starts = [[36, -0.3], [36, 0.3], [82, -0.3], [82, 0.3]].map(([back, side]) => {
+  // Staggered 8-car grid behind the start line, alternating sides (pole on the left).
+  const starts = Array.from({ length: 8 }, (_, k) => [30 + k * 26, k % 2 ? 0.32 : -0.32]).map(([back, side]) => {
     const i = (n - Math.round(back / STEP)) % n, c = pts[i];
     return { x: c.x + c.nx * side * c.hw, y: c.y + c.ny * side * c.hw, a: Math.atan2(c.ty, c.tx) };
   });
 
   return {
     id: spec.id, name: spec.name, tag: spec.tag, difficulty: spec.difficulty,
-    pts, length, gates, starts,
+    pts, length, gates, autoGates: !manual, starts,
     oil: (spec.oil ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; }),
     sand: (spec.sand ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; }),
     boosts: (spec.boosts ?? []).map((b) => { const p = at(b); return { x: p.x, y: p.y, a: Math.atan2(p.c.ty, p.c.tx), len: b.len ?? 56, w: b.w ?? Math.min(70, p.c.hw * 1.1) }; }),
-    grip: spec.grip ?? 1,
+    bumps, bumpLoss: clamp(edit.bumpLoss, 0, 0.8, BUMP_LOSS),
+    obstacles: placeObstacles(spec.id, t, spec.theme.deco, open, clutter),
+    grip: clamp(edit.grip, 0.1, 1.5, spec.grip ?? 1), baseGrip: spec.grip ?? 1,
+    walls: !open,
+    roughness: clamp(edit.roughness, 0, 2, 1), clutter,
     theme: spec.theme,
   };
 }
@@ -312,7 +419,7 @@ const SPECS: Spec[] = [
   {
     id: "sunny", name: "Sunny Speedway", difficulty: 1,
     tag: "Wide and fast. Draft on the straights, boost past.",
-    theme: { ground: ["#6aa845", "#4b8531", "#86c25a"], road: "#b3aa9b", speck: "rgba(70,60,50,0.18)", kerb: ["#d8453b", "#f4efe2"], deco: ["tree", "tree", "cone"], label: "rgba(30,50,20,0.28)" },
+    theme: { ground: ["#6aa845", "#4b8531", "#86c25a"], road: "#b3aa9b", speck: "rgba(70,60,50,0.18)", kerb: ["#d8453b", "#f4efe2"], deco: ["tree", "tree", "cone"], label: "rgba(30,50,20,0.28)", terrain: { name: "Grass", slow: 0.62, grip: 0.7 } },
     cps: [[560, 185, 72], [930, 185, 72], [1170, 212, 68], [1318, 335, 64], [1352, 520, 62], [1262, 690, 62], [1060, 758, 58], [895, 700, 50], [735, 765, 54], [480, 772, 62], [272, 690, 66], [206, 478, 68], [292, 272, 70]],
     boosts: [{ cp: 0, ds: 200 }, { cp: 9, ds: 10 }],
     sand: [{ cp: 3, ds: 20, outside: true, off: 0.62, r: 40 }, { cp: 11, outside: true, off: 0.62, r: 40 }],
@@ -320,7 +427,7 @@ const SPECS: Spec[] = [
   {
     id: "junkyard", name: "Junkyard 8", difficulty: 2,
     tag: "A figure-8. Everyone meets at the crossing…",
-    theme: { ground: ["#7a8a3a", "#56632a", "#9aa84e"], road: "#b9a27a", speck: "rgba(80,64,40,0.22)", kerb: ["#e0772a", "#2b2621"], deco: ["tyres", "crate", "tyres"], label: "rgba(40,30,10,0.32)" },
+    theme: { ground: ["#7a8a3a", "#56632a", "#9aa84e"], road: "#b9a27a", speck: "rgba(80,64,40,0.22)", kerb: ["#e0772a", "#2b2621"], deco: ["tyres", "crate", "tyres"], label: "rgba(40,30,10,0.32)", terrain: { name: "Dirt & scrap", slow: 0.66, grip: 0.6 } },
     // Gerono lemniscate: two lobes crossing at ~90° in the middle. Starts at the bottom of the right lobe.
     curve: { f: (t) => { const u = t + Math.PI / 4; return [800 + 585 * Math.sin(u), 480 + 285 * Math.sin(2 * u)]; }, hw: 58 },
     oil: [{ at: 0.125, outside: true, off: 0.45, r: 34 }, { at: 0.625, outside: true, off: 0.45, r: 34 }, { at: 0.375, off: 0, r: 26 }],
@@ -329,7 +436,7 @@ const SPECS: Spec[] = [
   {
     id: "snake", name: "Snake Canyon", difficulty: 2,
     tag: "Tight S-bends. Take the inside line — sand is slow.",
-    theme: { ground: ["#e3c690", "#c9a46a", "#f0dcae"], road: "#a8714a", speck: "rgba(70,40,20,0.22)", kerb: ["#c0392b", "#f4efe2"], deco: ["rock", "cactus", "rock"], label: "rgba(90,55,20,0.3)" },
+    theme: { ground: ["#e3c690", "#c9a46a", "#f0dcae"], road: "#a8714a", speck: "rgba(70,40,20,0.22)", kerb: ["#c0392b", "#f4efe2"], deco: ["rock", "cactus", "rock"], label: "rgba(90,55,20,0.3)", terrain: { name: "Deep sand", slow: 0.5, grip: 0.6 } },
     cps: [[1000, 745, 56], [700, 745, 56], [565, 705, 48], [430, 752, 50], [268, 735, 54], [168, 590, 52], [190, 425, 50], [300, 330, 48],
       [430, 218, 46], [630, 440, 46], [830, 218, 46], [1030, 440, 46], [1210, 238, 48], [1335, 390, 50], [1360, 575, 52], [1250, 705, 54]],
     sand: [{ cp: 9, outside: true, off: 0.6, r: 36 }, { cp: 10, outside: true, off: 0.6, r: 36 }, { cp: 11, outside: true, off: 0.6, r: 36 }],
@@ -338,7 +445,7 @@ const SPECS: Spec[] = [
   {
     id: "frosty", name: "Frosty Fjord", difficulty: 2, grip: 0.5,
     tag: "Sheet ice. Everything slides — brake early.",
-    theme: { ground: ["#e8eff5", "#cfdbe5", "#ffffff"], road: "#a9cfe6", speck: "rgba(255,255,255,0.55)", kerb: ["#2f6fb3", "#f4f8fb"], deco: ["pine", "snowman", "pine"], label: "rgba(40,70,100,0.3)" },
+    theme: { ground: ["#e8eff5", "#cfdbe5", "#ffffff"], road: "#a9cfe6", speck: "rgba(255,255,255,0.55)", kerb: ["#2f6fb3", "#f4f8fb"], deco: ["pine", "snowman", "pine"], label: "rgba(40,70,100,0.3)", terrain: { name: "Deep snow", slow: 0.55, grip: 0.45 } },
     // Loops round a fjord inlet: a deep U-bend dips into the middle from the top edge.
     cps: [[520, 768, 70], [900, 772, 72], [1195, 730, 70], [1350, 560, 68], [1318, 330, 66], [1165, 205, 64], [985, 235, 62], [905, 385, 60],
       [800, 468, 62], [695, 385, 60], [615, 235, 62], [435, 200, 64], [262, 300, 66], [205, 505, 68], [298, 695, 70]],
@@ -348,12 +455,36 @@ const SPECS: Spec[] = [
   {
     id: "hairpin", name: "Hairpin Heights", difficulty: 3,
     tag: "Three hairpins. Brake late, boost out.",
-    theme: { ground: ["#8fa36b", "#6d8350", "#a9bb85"], road: "#9a9790", speck: "rgba(40,40,40,0.18)", kerb: ["#d8453b", "#f4efe2"], deco: ["rock", "pine", "rock"], label: "rgba(30,40,20,0.3)" },
+    theme: { ground: ["#8fa36b", "#6d8350", "#a9bb85"], road: "#9a9790", speck: "rgba(40,40,40,0.18)", kerb: ["#d8453b", "#f4efe2"], deco: ["rock", "pine", "rock"], label: "rgba(30,40,20,0.3)", terrain: { name: "Rough grass", slow: 0.6, grip: 0.65 } },
     cps: [[330, 190, 56], [760, 190, 56], [1115, 192, 54], [1248, 272, 48], [1118, 360, 50], [760, 360, 52], [522, 362, 50], [408, 452, 46], [522, 542, 50],
       [900, 542, 52], [1128, 546, 50], [1256, 628, 46], [1122, 712, 52], [700, 716, 56], [330, 716, 58], [204, 602, 58], [194, 380, 58], [236, 244, 58]],
     boosts: [{ cp: 4, ds: 70 }, { cp: 12, ds: 70 }, { cp: 8, ds: 60 }],
   },
 ];
 
-export const TRACKS: Record<TrackId, TrackDef> = Object.fromEntries(SPECS.map((s) => [s.id, build(s)])) as Record<TrackId, TrackDef>;
 export const TRACK_ORDER: TrackId[] = SPECS.map((s) => s.id);
+/** The edits that ship (see track-edits.json). */
+export const TRACK_EDITS: TrackEdits = COMMITTED_EDITS as TrackEdits;
+/** Live track table. Entries are rebuilt in place by applyTrackEdits. */
+export const TRACKS = {} as Record<TrackId, TrackDef>;
+
+/** (Re)build every track with these edits. Returns the ids whose definition changed. */
+export function applyTrackEdits(edits: TrackEdits): TrackId[] {
+  const changed: TrackId[] = [];
+  for (const spec of SPECS) {
+    const key = JSON.stringify(edits[spec.id] ?? {});
+    if (TRACKS[spec.id] && BUILT_WITH.get(spec.id) === key) continue;
+    TRACKS[spec.id] = build(spec, edits[spec.id] ?? {});
+    BUILT_WITH.set(spec.id, key);
+    changed.push(spec.id);
+  }
+  return changed;
+}
+const BUILT_WITH = new Map<TrackId, string>();
+
+/** A track built with specific edits, without touching the live table (tests, previews). */
+export function buildTrack(id: TrackId, edit: TrackEdit = {}): TrackDef {
+  return build(SPECS.find((s) => s.id === id)!, edit);
+}
+
+applyTrackEdits(TRACK_EDITS);

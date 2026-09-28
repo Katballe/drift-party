@@ -1,6 +1,7 @@
+import { carIcon } from "../shared/carArt";
+import { CARS, carStats, type CarStats } from "../shared/cars";
 import { Net } from "../shared/net";
 import {
-  CAR_LABELS,
   CAR_TYPES,
   CLOSE_NO_ROOM,
   CLOSE_REPLACED,
@@ -15,6 +16,8 @@ import {
   ST_BOOST,
   ST_DRAFT,
   ST_FINISHED,
+  ST_MISSED,
+  ST_OFFROAD,
   ST_WRONG_WAY,
   isRoomCode,
   makeClientId,
@@ -48,7 +51,7 @@ const KEYS: Record<string, Btn> = {
   ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right",
   ArrowUp: "throttle", KeyW: "throttle", ArrowDown: "brake", KeyS: "brake", Space: "brake",
 };
-const CAR_STATS: Record<CarType, string> = { bus: "Heavy · top speed", rc: "Nimble · quick start", normal: "Balanced" };
+const STAT_LABELS: [keyof CarStats, string][] = [["speed", "Top speed"], ["accel", "Acceleration"], ["handling", "Handling"], ["weight", "Weight"], ["offroad", "Off-road"]];
 
 function clientId(): string {
   try {
@@ -70,6 +73,7 @@ class DriftController {
   phase: Phase = "LOBBY";
   totalLaps = 3;
   racers: PlayerId[] = [];
+  field = 0;
   track = "";
   cup: CupInfo | null = null;
   name = (ls.get("driftparty.name") ?? "").slice(0, NAME_MAX);
@@ -90,6 +94,7 @@ class DriftController {
   view: View | "" = "";
   viewKey = "";
   portrait = false;
+  touch = false; // a phone/tablet (coarse pointer) — the only thing that needs turning sideways
   wakeLock: any = null;
   nameTimer = 0;
   root!: HTMLElement;
@@ -99,6 +104,8 @@ class DriftController {
     this.checkOrientation();
     window.addEventListener("resize", () => this.checkOrientation());
     window.addEventListener("orientationchange", () => setTimeout(() => this.checkOrientation(), 200));
+    screen.orientation?.addEventListener?.("change", () => this.checkOrientation());
+    document.addEventListener("focusout", () => setTimeout(() => this.checkOrientation(), 350)); // keyboard closed
     this.bindTouch();
     this.bindKeys();
     this.root.addEventListener("click", (e) => this.onClick(e));
@@ -139,7 +146,7 @@ class DriftController {
         this.conn = "idle";
         this.myId = null;
         this.phase = "LOBBY";
-        this.error = code === CLOSE_ROOM_FULL ? "That game is full — 4 racers max."
+        this.error = code === CLOSE_ROOM_FULL ? "That game is full — 8 phones max."
           : code === CLOSE_NO_ROOM ? `No game with code ${this.code}. Check the code on the big screen.`
           : code === CLOSE_REPLACED ? "You joined this game from another tab." : "Couldn't join that game.";
         this.releaseAll();
@@ -189,7 +196,7 @@ class DriftController {
         break;
       case "phase": {
         const prev = this.phase;
-        Object.assign(this, { phase: msg.phase, totalLaps: msg.totalLaps, racers: msg.racers ?? [], track: msg.track ?? "", cup: msg.cup ?? null });
+        Object.assign(this, { phase: msg.phase, totalLaps: msg.totalLaps, racers: msg.racers ?? [], field: msg.field ?? 0, track: msg.track ?? "", cup: msg.cup ?? null });
         if (this.conn === "noHost" || this.conn === "connecting") this.conn = "connected";
         if (msg.phase === "LOBBY" && prev !== "LOBBY") { this.ready = false; this.st = null; this.standings = []; this.sendProfile(); }
         if (msg.phase === "COUNTDOWN" && prev !== "COUNTDOWN" && prev !== "PAUSED") { this.st = null; this.results = []; }
@@ -331,8 +338,14 @@ class DriftController {
 
   checkOrientation() {
     const coarse = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+    // While typing, the on-screen keyboard shrinks the viewport and could make a
+    // portrait phone look sideways — keep the last answer until it closes.
+    if (coarse && document.activeElement?.tagName === "INPUT") return;
     const p = coarse && window.innerHeight > window.innerWidth;
-    if (p !== this.portrait) { this.portrait = p; this.render(true); }
+    if (p === this.portrait && coarse === this.touch) return;
+    this.portrait = p;
+    this.touch = coarse;
+    this.render(); // rebuilds the race view; elsewhere just patches the rotate prompt
   }
 
   // ── lobby actions ─────────────────────────────────────────────────────────
@@ -405,18 +418,26 @@ class DriftController {
     const set = (id: string, text: string) => { const el = $(id); if (el && el.textContent !== text) el.textContent = text; };
     const s = this.st;
     if (this.view === "race") {
-      set("hud-pos", s ? `${ordinal(s[0])} place` : "—");
+      set("hud-pos", s ? `${ordinal(s[0])}${this.field > 1 ? ` / ${this.field}` : " place"}` : "—");
       set("hud-lap", `Lap ${s ? Math.min(s[1], this.totalLaps) : 1}/${this.totalLaps}`);
       const f = s ? s[2] : 0;
       const [label, bg] = this.conn !== "connected" ? ["Reconnecting…", "rgba(0,0,0,0.75)"]
         : this.phase === "COUNTDOWN" ? ["GET READY — hold GAS!", "rgba(0,0,0,0.75)"]
         : this.phase === "PAUSED" ? ["PAUSED", "rgba(0,0,0,0.75)"]
         : f & ST_WRONG_WAY ? ["WRONG WAY! Turn around", "#E63946"]
+        : f & ST_MISSED ? ["↩ Missed a checkpoint — go back!", "#6A1B9A"]
         : f & ST_BOOST ? ["⚡ BOOST!", "#FF8F00"]
-        : f & ST_DRAFT ? ["💨 Slipstream", "#1565C0"] : ["", ""];
+        : f & ST_DRAFT ? ["💨 Slipstream", "#1565C0"]
+        : f & ST_OFFROAD ? ["Off the road — slow going!", "#795548"] : ["", ""];
       const el = $("hud-label");
       if (el) { el.textContent = label; el.style.display = label ? "block" : "none"; el.style.background = bg; }
-    } else if (this.view === "lobby") {
+    }
+    const o = $("orient");
+    if (o) {
+      const k = !this.touch ? "" : this.portrait ? "turn" : "ok";
+      if (o.dataset.k !== k) { o.dataset.k = k; o.innerHTML = this.orientHTML(k); o.style.display = k ? "block" : "none"; }
+    }
+    if (this.view === "lobby") {
       const [dot, text] = this.conn === "connected" ? ["#4CAF50", "Connected"] : this.conn === "noHost" ? ["#FFB300", "Waiting for the big screen…"] : ["#FFB300", "Reconnecting…"];
       const d = $("conn-dot"); if (d) d.style.background = dot;
       set("conn-text", text);
@@ -468,13 +489,34 @@ class DriftController {
     </form>`;
   }
 
+  /** "Turn your phone sideways" prompt for the pre-race screens (patched in place as the phone turns). */
+  orientHTML(k: string) {
+    if (k === "ok") {
+      return `<div style="display:flex;align-items:center;gap:8px;background:#e5f3e6;color:#2E7D32;border-radius:12px;padding:7px 12px;font-size:18px;font-weight:700">
+        <span style="font-size:20px">✓</span> Phone is sideways — you're set for the race</div>`;
+    }
+    if (k !== "turn") return "";
+    return `<div style="display:flex;align-items:center;gap:14px;background:#FFF3C4;border:3px solid #FFB300;border-radius:14px;padding:10px 14px;text-align:left">
+      <div style="width:44px;height:44px;flex-shrink:0;display:flex;align-items:center;justify-content:center">
+        <div style="width:24px;height:40px;border:3px solid #1a2a0a;border-radius:6px;position:relative;animation:tilt 2.4s ease-in-out infinite">
+          <div style="position:absolute;bottom:3px;left:50%;width:5px;height:5px;margin-left:-2.5px;border-radius:50%;background:#1a2a0a"></div></div></div>
+      <div style="line-height:1.15">
+        <div style="font-size:22px;font-weight:700;color:#1a2a0a">Turn your phone sideways</div>
+        <div style="font-size:15px;color:#7a6420">Do it before the race starts — the controls only work in landscape. Screen won't turn? Switch off rotation lock.</div>
+      </div></div>`;
+  }
+
   lobbyHTML() {
     const id = this.myId!, color = PLAYER_COLORS[id];
     const cars = CAR_TYPES.map((t) => {
       const on = this.carType === t;
-      return `<button data-action="car" data-car="${t}" style="flex:1;min-width:92px;padding:9px 8px;border:3px solid ${on ? color : "#ddd"};background:${on ? color : "#fff"};color:${on ? "#fff" : "#333"};border-radius:12px;font-size:19px;font-weight:700;font-family:'Caveat',cursive;cursor:pointer;line-height:1.1">
-        ${CAR_LABELS[t]}<div style="font-size:13px;font-weight:400;opacity:0.75;margin-top:2px">${CAR_STATS[t]}</div></button>`;
+      return `<button data-action="car" data-car="${t}" aria-pressed="${on}" style="min-width:0;padding:5px 4px 6px;border:3px solid ${on ? color : "#e2ddcc"};background:${on ? "#fff" : "rgba(255,255,255,0.55)"};border-radius:12px;cursor:pointer;box-shadow:${on ? `0 0 0 2px ${color}33` : "none"}">
+        <img src="${carIcon(t, color, 96)}" alt="" style="width:100%;max-width:80px;aspect-ratio:5/3;display:block;margin:0 auto;opacity:${on ? 1 : 0.8}" />
+        <div style="font-size:16px;font-weight:700;font-family:'Caveat',cursive;color:${on ? "#1a2a0a" : "#6b6450"};line-height:.95">${CARS[t].label}</div></button>`;
     }).join("");
+    const st = carStats(this.carType);
+    const bars = STAT_LABELS.map(([k, label]) => `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:15px;color:#6b6450">${label}
+        <span style="display:flex;gap:3px">${[1, 2, 3, 4, 5].map((n) => `<span style="width:13px;height:8px;border-radius:2px;background:${n <= st[k] ? color : "#e2ddcc"}"></span>`).join("")}</span></div>`).join("");
     return `<div style="min-height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:16px;background:#f0ede4">
       ${this.header()}
       <div style="display:flex;align-items:center;gap:8px;font-size:16px;color:#777;width:100%;max-width:520px">
@@ -487,10 +529,17 @@ class DriftController {
         <input id="nameInput" value="${esc(this.name)}" placeholder="Player ${slotNumber(id)}" maxlength="${NAME_MAX}" autocomplete="nickname" enterkeyhint="done"
           style="flex:1;min-width:0;border:none;outline:none;font-size:22px;font-weight:700;font-family:'Caveat',cursive;color:#222;background:transparent" />
       </label>
-      <div style="display:flex;gap:8px;width:100%;max-width:520px;flex-wrap:wrap">${cars}</div>
+      <div style="width:100%;max-width:520px">
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px">${cars}</div>
+        <div style="margin-top:8px;background:#fff;border-radius:12px;padding:8px 12px;box-shadow:0 1px 5px rgba(0,0,0,0.06)">
+          <div style="font-size:19px;color:#1a2a0a;line-height:1.1"><b>${CARS[this.carType].label}</b> <span style="color:#8a836c">— ${CARS[this.carType].blurb}</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:16px;row-gap:1px;margin-top:4px">${bars}</div>
+        </div>
+      </div>
+      <div id="orient" style="width:100%;max-width:520px;display:none"></div>
       <button data-action="ready" style="width:100%;max-width:520px;padding:14px;background:${this.ready ? "#2E7D32" : "#E63946"};color:#fff;border:none;border-radius:14px;font-size:28px;font-weight:700;font-family:'Caveat',cursive;cursor:pointer;box-shadow:0 4px 0 ${this.ready ? "#1B5E20" : "#B71C1C"}">
         ${this.ready ? "✓ Ready! Waiting for the host…" : "Ready up"}</button>
-      <div style="font-size:14px;color:#9a937c;text-align:center;line-height:1.35">Hold your phone sideways during the race.<br>Left thumb steers · right thumb GAS / BRAKE · ⚡ pads boost · tuck in behind a car to slipstream</div>
+      <div style="font-size:14px;color:#9a937c;text-align:center;line-height:1.35">Left thumb steers · right thumb GAS / BRAKE · brake + steer = drift<br>⚡ pads boost · tuck in behind a car to slipstream</div>
     </div>`;
   }
 
@@ -500,6 +549,7 @@ class DriftController {
       <div style="font-size:60px;line-height:1">👀</div>
       <div style="font-size:34px;font-weight:700;color:#1a2a0a">${what}</div>
       <div style="font-size:19px;color:#888;line-height:1.35">You're in — you'll race from the next one.<br>Watch the big screen!</div>
+      <div id="orient" style="width:100%;max-width:440px;display:none;margin-top:6px"></div>
       <button data-action="leave" style="margin-top:6px;background:none;border:1px solid #ccc;color:#888;border-radius:8px;padding:3px 12px;font-family:'Caveat',cursive;font-size:16px;cursor:pointer">Leave</button>
     </div>`;
   }
@@ -551,6 +601,7 @@ class DriftController {
       <div id="res-sub" style="font-size:19px;color:#888"></div>
       <div id="res-cup" style="font-size:21px;color:#2E7D32;font-weight:700"></div>
       <div style="font-size:16px;color:#aaa;line-height:1.4">Full results are on the big screen.<br>Waiting for the host…</div>
+      <div id="orient" style="width:100%;max-width:440px;display:none;margin-top:6px"></div>
     </div>`;
   }
 }

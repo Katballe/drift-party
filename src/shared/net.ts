@@ -55,7 +55,7 @@ export class Net {
   private url(): string {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const q = new URLSearchParams({ room: this.code, role: this.role, cid: this.clientId });
-    return `${proto}//${location.host}/ws?${q}`;
+    return `${proto}//${location.host}${import.meta.env.BASE_URL}ws?${q}`; // BASE_URL: "/" or "/drift-party/"
   }
 
   private connect(): void {

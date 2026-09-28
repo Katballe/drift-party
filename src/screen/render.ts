@@ -3,9 +3,10 @@
 // the backing store is scaled to the display (up to 2×) so TVs and hi-DPI
 // screens stay crisp.
 
-import { INK, hashStr, inkShape, makePaper, paintGrass, roughPath, rng, sampleEllipse, sampleRoundRect, type Pt } from "./sketch";
+import { drawCarArt } from "../shared/carArt";
+import { INK, hashStr, inkShape, makePaper, paintGrass, rng, sampleEllipse, sampleRoundRect } from "../shared/sketch";
 import { normA, type Race, type SimCar } from "./sim";
-import type { DecoKind, TrackDef } from "./tracks";
+import { BOUNDS, type DecoKind, type Gate, type TrackDef } from "./tracks";
 
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; r: number; color: string; grow: number; }
 interface Wheels { lx: number; ly: number; rx: number; ry: number; }
@@ -98,7 +99,8 @@ export class Renderer {
   }
 
   // ── frame ─────────────────────────────────────────────────────────────────
-  frame(race: Race | null, alpha: number, dt: number) {
+  /** Draw a frame. `overlay` (dev tools) draws in logical 1600×900 space on top. */
+  frame(race: Race | null, alpha: number, dt: number, overlay?: (ctx: CanvasRenderingContext2D) => void) {
     const ctx = this.ctx, s = this.scale;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (this.bg) ctx.drawImage(this.bg, 0, 0);
@@ -109,13 +111,22 @@ export class Renderer {
       if (this.skid) ctx.drawImage(this.skid, 0, 0);
       ctx.setTransform(s, 0, 0, s, 0, 0);
       this.updateParticles(dt, false);
+      // A car that skipped a checkpoint sees that checkpoint light up in its colour.
+      for (const c of race.cars) if (c.missed) drawGateLine(ctx, race.track.gates[c.gatesPassed % race.track.gates.length], c.color, race.time);
       const cars = race.cars.map((c) => ({ c, ...this.lerp(c, alpha) })).sort((a, b) => a.y - b.y);
       for (const k of cars) this.drawCar(k.c, k.x, k.y, k.a, race.time);
       this.updateParticles(0, true);
       for (const k of cars) this.drawLabels(race, k.c, k.x, k.y);
     }
+    if (overlay) { ctx.setTransform(s, 0, 0, s, 0, 0); overlay(ctx); }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (this.paper) ctx.drawImage(this.paper, 0, 0);
+  }
+
+  /** Canvas point (client px) → logical track coordinates. */
+  toLogical(clientX: number, clientY: number) {
+    const r = this.canvas.getBoundingClientRect();
+    return { x: ((clientX - r.left) / r.width) * W, y: ((clientY - r.top) / r.height) * H };
   }
 
   private lerp(c: SimCar, t: number) {
@@ -142,7 +153,7 @@ export class Renderer {
       const prev = this.wheels.get(c.id);
       const marking = !c.ghost && (c.drifting || (c.input.brake && c.fwd > 90) || c.onOil) && c.speed > 45;
       if (prev && marking) {
-        k.lineWidth = c.cfg.type === "bus" ? 4 : 3;
+        k.lineWidth = c.cfg.h >= 24 ? 4 : 3;
         k.beginPath(); k.moveTo(prev.lx, prev.ly); k.lineTo(w.lx, w.ly); k.moveTo(prev.rx, prev.ry); k.lineTo(w.rx, w.ry); k.stroke();
         if (c.drifting && Math.random() < 0.5) {
           this.emit({ x: w.lx, y: w.ly, vx: (Math.random() - 0.5) * 30, vy: (Math.random() - 0.5) * 30, life: 0, max: 0.6, r: 4, color: "rgba(236,236,236,", grow: 18 });
@@ -176,7 +187,6 @@ export class Renderer {
   private drawCar(car: SimCar, x: number, y: number, angle: number, time: number) {
     const ctx = this.ctx;
     const { w, h } = car.cfg, type = car.cfg.type, seed = hashStr(car.id);
-    const r = type === "rc" ? 5 : 6;
     ctx.save();
     if (car.finished) ctx.globalAlpha = 0.45;
     if (car.ghost) ctx.globalAlpha = 0.3 + 0.1 * Math.sin(time * 6);
@@ -196,42 +206,7 @@ export class Renderer {
       ctx.fillStyle = "#FF5722";
       ctx.beginPath(); ctx.moveTo(-w / 2, -h * 0.16); ctx.lineTo(-w / 2 - fl * 0.55, 0); ctx.lineTo(-w / 2, h * 0.16); ctx.closePath(); ctx.fill();
     }
-    // soft drop shadow
-    ctx.save(); ctx.translate(3, 4); ctx.globalAlpha *= 0.2;
-    inkShape(ctx, sampleRoundRect(-w / 2, -h / 2, w, h, Math.min(6, h * 0.4)), 1, seed + 8, "#000", INK, 0);
-    ctx.restore();
-    // wheels
-    const wheels: Pt[] = [[w * 0.28, h * 0.46], [w * 0.28, -h * 0.46], [-w * 0.32, h * 0.46], [-w * 0.32, -h * 0.46]];
-    for (const [wx, wy] of wheels) inkShape(ctx, sampleRoundRect(wx - w * 0.1, wy - h * 0.16, w * 0.2, h * 0.32, 2), 0.7, seed + 3, INK, INK, 0);
-    // body
-    inkShape(ctx, sampleRoundRect(-w / 2, -h / 2, w, h, r), 1.3, seed + 1, car.color, INK, Math.max(2.2, w * 0.1));
-    // cel shadow on the lower half
-    ctx.save(); ctx.globalAlpha *= 0.16; ctx.fillStyle = "#000";
-    roughPath(ctx, sampleRoundRect(-w / 2 + 1, h * 0.02, w - 2, h * 0.46, r * 0.6), 0.8, rng(seed + 4)); ctx.fill();
-    ctx.restore();
-    // top highlight
-    ctx.strokeStyle = "rgba(255,255,255,0.5)"; ctx.lineWidth = Math.max(1.5, w * 0.05); ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(-w * 0.34, -h * 0.32); ctx.lineTo(w * 0.28, -h * 0.32); ctx.stroke();
-    // windows
-    const win = "rgba(196,228,242,0.92)";
-    if (type === "bus") {
-      for (const wx of [w * 0.2, -w * 0.02, -w * 0.24]) inkShape(ctx, sampleRoundRect(wx - w * 0.07, -h * 0.3, w * 0.14, h * 0.6, 2), 0.5, seed + 5, win, INK, 1.2);
-    } else {
-      inkShape(ctx, sampleRoundRect(w * 0.03, -h * 0.32, w * 0.27, h * 0.64, 2), 0.6, seed + 5, win, INK, 1.2);
-    }
-    // headlights (front = +x) and brake lights
-    ctx.fillStyle = "#ffe9a8";
-    for (const wy of [h * 0.28, -h * 0.28]) { ctx.beginPath(); ctx.arc(w * 0.46, wy, Math.max(1.4, w * 0.05), 0, Math.PI * 2); ctx.fill(); }
-    if (car.input.brake && !car.finished && !car.ghost) {
-      ctx.fillStyle = "#ff3b30";
-      for (const wy of [h * 0.3, -h * 0.3]) { ctx.beginPath(); ctx.arc(-w * 0.47, wy, Math.max(1.4, w * 0.05), 0, Math.PI * 2); ctx.fill(); }
-    }
-    // RC antenna
-    if (type === "rc") {
-      ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
-      ctx.beginPath(); ctx.moveTo(-w * 0.5, 0); ctx.lineTo(-w * 0.78, -h * 0.6); ctx.stroke();
-      ctx.fillStyle = "#FFD600"; ctx.beginPath(); ctx.arc(-w * 0.78, -h * 0.6, 2, 0, Math.PI * 2); ctx.fill();
-    }
+    drawCarArt(ctx, type, car.color, w, h, seed, car.input.brake && !car.finished && !car.ghost);
     ctx.restore();
   }
 
@@ -245,9 +220,10 @@ export class Renderer {
     ctx.strokeText(label, x, y - h / 2 - 10);
     ctx.fillStyle = "#fff"; ctx.fillText(label, x, y - h / 2 - 10);
     ctx.globalAlpha = 1;
-    if (car.wrongWay && Math.floor(race.time * 3) % 2 === 0) {
+    const warn = car.wrongWay ? "WRONG WAY!" : car.missed ? "MISSED CHECKPOINT ↩" : "";
+    if (warn && Math.floor(race.time * 3) % 2 === 0) {
       ctx.font = "700 22px 'Caveat',cursive";
-      ctx.strokeText("WRONG WAY!", x, y + h / 2 + 24); ctx.fillStyle = "#ff4d4d"; ctx.fillText("WRONG WAY!", x, y + h / 2 + 24);
+      ctx.strokeText(warn, x, y + h / 2 + 24); ctx.fillStyle = car.wrongWay ? "#ff4d4d" : "#FFD600"; ctx.fillText(warn, x, y + h / 2 + 24);
     }
   }
 
@@ -279,13 +255,16 @@ export function drawTrack(ctx: CanvasRenderingContext2D, t: TrackDef, quick: boo
   const r = rng(seed);
   if (quick) { ctx.fillStyle = th.ground[0]; ctx.fillRect(0, 0, W, H); }
   else paintGrass(ctx, W, H, th.ground[0], th.ground[1], th.ground[2]);
-  if (!quick) drawDecorations(ctx, t, r);
+  if (!quick) for (const o of t.obstacles) drawDeco(ctx, o.kind, o.x, o.y, o.seed, o.s);
+  if (!t.walls) drawBarrier(ctx, quick);
 
   // Road = overlapping discs along the centerline: ink border first, then the
-  // surface. Where the road crosses itself the union stays clean.
+  // surface. Where the road crosses itself the union stays clean. An open
+  // track gets a soft, low verge instead of an inked wall.
   const wob = (i: number, k: number) => 1.6 * Math.sin(i * 0.11 + k) + 1.1 * Math.sin(i * 0.037 + 2 * k);
-  ctx.fillStyle = INK;
-  for (let i = 0; i < n; i++) { const p = P[i]; ctx.beginPath(); ctx.arc(p.x, p.y, p.hw + 7 + wob(i, seed % 7), 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = t.walls ? INK : "rgba(38,32,26,0.28)";
+  const rim = t.walls ? 7 : 4;
+  for (let i = 0; i < n; i++) { const p = P[i]; ctx.beginPath(); ctx.arc(p.x, p.y, p.hw + rim + wob(i, seed % 7), 0, Math.PI * 2); ctx.fill(); }
   ctx.fillStyle = th.road;
   for (let i = 0; i < n; i++) { const p = P[i]; ctx.beginPath(); ctx.arc(p.x, p.y, p.hw + wob(i, 3) * 0.4, 0, Math.PI * 2); ctx.fill(); }
 
@@ -335,23 +314,52 @@ export function drawTrack(ctx: CanvasRenderingContext2D, t: TrackDef, quick: boo
     ctx.restore();
   }
   for (const b of t.boosts) drawBoost(ctx, b.x, b.y, b.a, b.len, b.w);
-  if (!quick) for (const g of t.gates.slice(1)) drawCheckpoint(ctx, t, g.i);
+  for (const b of t.bumps) drawBump(ctx, b.x1, b.y1, b.x2, b.y2);
+  if (!quick) for (const g of t.gates.slice(1)) {
+    if (!t.walls) drawGateLine(ctx, g, "rgba(255,255,255,0.55)"); // open track: show where the line runs
+    drawCheckpoint(ctx, t, g.i);
+  }
   drawStartLine(ctx, t);
 }
 
-function drawDecorations(ctx: CanvasRenderingContext2D, t: TrackDef, r: () => number) {
-  const kinds = t.theme.deco, placed: { x: number; y: number }[] = [];
-  for (let tries = 0; tries < 400 && placed.length < 30; tries++) {
-    const x = 40 + r() * (W - 80), y = 95 + r() * (H - 130);
-    if (roadGap(t, x, y) < 34) continue;
-    if (placed.some((p) => Math.hypot(p.x - x, p.y - y) < 70)) continue;
-    placed.push({ x, y });
-    drawDeco(ctx, kinds[placed.length % kinds.length], x, y, hashStr(`${t.id}${placed.length}`));
+/** Open tracks: a tyre-and-plank barrier along the screen edge — the one wall left. */
+function drawBarrier(ctx: CanvasRenderingContext2D, quick: boolean) {
+  const { x0, y0, x1, y1 } = BOUNDS;
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = INK; ctx.lineWidth = quick ? 8 : 7;
+  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  if (!quick) {
+    ctx.setLineDash([22, 22]); ctx.strokeStyle = "#d8453b"; ctx.lineWidth = 4;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
   }
+  ctx.restore();
 }
 
-function drawDeco(ctx: CanvasRenderingContext2D, kind: DecoKind, x: number, y: number, seed: number) {
-  const r = rng(seed), s = 0.8 + r() * 0.5;
+/** A dashed chalk line along a checkpoint gate (open tracks, missed checkpoints, dev overlay). */
+export function drawGateLine(ctx: CanvasRenderingContext2D, g: Gate, color: string, time = 0) {
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap = "round";
+  ctx.setLineDash([10, 9]); ctx.lineDashOffset = -time * 30;
+  ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); ctx.stroke();
+  ctx.restore();
+}
+
+/** Speed bump: a yellow-and-black ridge across the road. */
+function drawBump(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number) {
+  const len = Math.hypot(x2 - x1, y2 - y1), a = Math.atan2(y2 - y1, x2 - x1);
+  ctx.save(); ctx.translate((x1 + x2) / 2, (y1 + y2) / 2); ctx.rotate(a);
+  ctx.fillStyle = "rgba(0,0,0,0.22)"; ctx.fillRect(-len / 2, 2, len, 10);
+  inkShape(ctx, sampleRoundRect(-len / 2, -6, len, 12, 5, 12), 0.6, hashStr(`bump${x1}`), "#FFD600", INK, 2);
+  ctx.fillStyle = INK;
+  for (let x = -len / 2 + 6; x < len / 2 - 8; x += 16) {
+    ctx.beginPath(); ctx.moveTo(x, -5); ctx.lineTo(x + 7, -5); ctx.lineTo(x + 2, 5); ctx.lineTo(x - 5, 5); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawDeco(ctx: CanvasRenderingContext2D, kind: DecoKind, x: number, y: number, seed: number, s: number) {
+  const r = rng(seed);
   const shadow = (rx: number, ry: number) => { ctx.fillStyle = "rgba(0,0,0,0.15)"; ctx.beginPath(); ctx.ellipse(x + 4, y + 5, rx, ry, 0, 0, Math.PI * 2); ctx.fill(); };
   switch (kind) {
     case "tree":

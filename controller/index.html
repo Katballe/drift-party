@@ -22,6 +22,8 @@
     #root { position: fixed; inset: 0; overflow-y: auto; -webkit-overflow-scrolling: touch;
       padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
     @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes tilt { 0%, 22% { transform: rotate(0); } 45%, 78% { transform: rotate(-90deg); } 100% { transform: rotate(0); } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
   </style>
 </head>
 <body>

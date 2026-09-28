@@ -23,20 +23,20 @@ const screen = client("screen", "hosttokenAAAA");
 ok(await screen.open, "screen connects");
 
 const phones = [];
-for (let i = 1; i <= 4; i++) { const p = client("controller", `phone000${i}`); phones.push(p); await p.open; await sleep(80); }
+for (let i = 1; i <= 8; i++) { const p = client("controller", `phone000${i}`); phones.push(p); await p.open; await sleep(80); }
 await sleep(200);
-ok(phones.map((p) => p.of("assigned")[0]?.playerId).join() === "p1,p2,p3,p4", "4 phones get slots p1..p4");
-ok(screen.of("controllerJoined").length === 4, "screen is told about each phone");
+ok(phones.map((p) => p.of("assigned")[0]?.playerId).join() === "p1,p2,p3,p4,p5,p6,p7,p8", "8 phones get slots p1..p8");
+ok(screen.of("controllerJoined").length === 8, "screen is told about each phone");
 
-const fifth = client("controller", "phone0005");
+const ninth = client("controller", "phone0009");
 await sleep(400);
-ok(fifth.closed === 4002, `5th phone is refused as full (close ${fifth.closed})`);
+ok(ninth.closed === 4002, `9th phone is refused as full (close ${ninth.closed})`);
 
 // Phone 2 (slot p2) drops: its slot is held, a newcomer can't take it, and it gets it back.
 phones[1].ws.close();
 await sleep(300);
 ok(screen.of("controllerLeft").some((m) => m.playerId === "p2"), "screen hears that p2 left");
-const intruder = client("controller", "phone0006");
+const intruder = client("controller", "phone0010");
 await sleep(400);
 ok(intruder.closed === 4002, "a newcomer cannot take a held slot");
 const back = client("controller", "phone0002");
@@ -68,7 +68,7 @@ ok(thief.closed === 4001, "a different screen is refused");
 const refreshed = client("screen", "hosttokenAAAA");
 await sleep(400);
 ok(screen.closed === 4004, "the host's old tab is replaced on refresh");
-ok(refreshed.of("controllerJoined").length === 4, "the refreshed screen sees all 4 phones");
+ok(refreshed.of("controllerJoined").length === 8, "the refreshed screen sees all 8 phones");
 ok(phones[0].of("screenJoined").length === 1, "phones are told the host is back");
 
 const lost = new WebSocket(`${BASE}/ws?room=NOPE99&role=controller&cid=phone0099`);

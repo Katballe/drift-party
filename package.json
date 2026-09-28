@@ -7,8 +7,10 @@
   "scripts": {
     "build": "vite build",
     "dev:client": "vite",
-    "dev": "vite build && wrangler dev",
+    "dev": "vite build --mode devtools && wrangler dev",
+    "dev:lan": "vite build --mode devtools && wrangler dev --ip 0.0.0.0",
     "deploy": "npm run check && vite build && wrangler deploy",
+    "deploy:dev": "npm run check && vite build --mode studio-dev && wrangler deploy --env dev",
     "typecheck": "tsc --noEmit",
     "test": "esbuild test/sim.test.ts --bundle --platform=node --format=esm --outfile=.test-out/sim.test.mjs --log-level=warning && node .test-out/sim.test.mjs",
     "check": "npm run typecheck && npm test"
