@@ -122,8 +122,14 @@ npm run dev:lan    # same, reachable from phones on your Wi-Fi: open the screen 
 build (`npm run build` / `npm run deploy`) leaves it out entirely.
 
 In the lobby press **E** (or **🛠 Track editor**). Per track you can:
-- place / remove **checkpoints** (click the road; C) and **speed bumps** (B), and
-  set how much speed a bump takes;
+- place and remove individual items — **checkpoints** (C), **speed bumps** (B),
+  **boost pads** (P), **sand / snow** (S), **oil slicks** (O), **scenery** (T) —
+  by clicking; click an existing one with the same tool to remove it, or use the
+  **eraser** (X). Each type can be reset to the track's own layout or cleared;
+- choose the checkpoint look: flags only, or flags + a **checkered line**
+  between them (checkpoint lines only ever span the road — cutting across the
+  grass past one counts as a missed checkpoint);
+- set how much speed a speed bump takes;
 - change **road grip** (how slippery the ice is — or make any track icy);
 - switch **walls ↔ open track**, and tune the off-road penalty and how much
   scenery crowds the road;

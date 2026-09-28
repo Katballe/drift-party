@@ -24,10 +24,13 @@ export interface CenterPt {
 }
 /** A line segment (gates and speed bumps are lines across the road). */
 export interface Seg { x1: number; y1: number; x2: number; y2: number; }
-export interface Gate extends Seg { mx: number; my: number; nx: number; ny: number; i: number; }
+export interface Gate extends Seg {
+  mx: number; my: number; nx: number; ny: number; i: number;
+  flags: { x: number; y: number }[]; // one flag on each side of the road, always off the tarmac
+}
 export interface Bump extends Seg { i: number; }
 export interface Circle { x: number; y: number; r: number; }
-export interface Pad { x: number; y: number; a: number; len: number; w: number; }
+export interface Pad { x: number; y: number; a: number; len: number; w: number; i: number; off: number; }
 export type DecoKind = "tree" | "tyres" | "crate" | "rock" | "cactus" | "pine" | "snowman" | "cone";
 /** Scenery. Just decoration behind walls; solid on an open track. */
 export interface Obstacle { x: number; y: number; r: number; s: number; kind: DecoKind; seed: number; }
@@ -52,6 +55,12 @@ export interface TrackEdit {
   bumps?: number[];       // speed bumps, as lap fractions (0–1 from the start line)
   bumpLoss?: number;      // fraction of speed a bump takes at full speed
   checkpoints?: number[]; // hand-placed checkpoints (lap fractions); omit for automatic (key corners)
+  checkerLines?: boolean; // draw a checkered line across the road between each checkpoint's flags
+  // Hand-placed features — each list, when present, replaces the track's own:
+  boosts?: { at: number; off: number }[];                            // lap fraction + sideways offset (−1…1 of the half-width)
+  sand?: { x: number; y: number; r: number }[];                      // sand / snow patches
+  oil?: { x: number; y: number; r: number }[];                       // oil slicks
+  scenery?: { x: number; y: number; kind: DecoKind; s: number }[];   // trees, rocks… (solid on open tracks)
 }
 export type TrackEdits = Partial<Record<TrackId, TrackEdit>>;
 
@@ -64,6 +73,8 @@ export interface TrackDef {
   oil: Circle[]; sand: Circle[]; boosts: Pad[];
   bumps: Bump[]; bumpLoss: number;
   obstacles: Obstacle[];
+  manualScenery: boolean; // scenery was hand-placed (so the clutter setting doesn't apply)
+  checkerLines: boolean;
   grip: number;          // surface grip multiplier (ice < 1)
   baseGrip: number;      // the grip the spec ships with (before edits)
   walls: boolean;
@@ -74,7 +85,6 @@ export interface TrackDef {
 /** Hard screen boundary for cars (logical 1600×900; the top strip is under the HUD). */
 export const BOUNDS = { x0: 8, y0: 70, x1: 1592, y1: 892 };
 export const BUMP_LOSS = 0.35;
-const GATE_REACH = 260;     // open tracks: checkpoint lines reach this far past the road edge
 
 const STEP = 8;             // centerline sample spacing (px)
 const BEND_K = 1 / 450;     // a bend peaks tighter than a 450 px radius…
@@ -323,6 +333,28 @@ export function lineIsClean(t: { pts: CenterPt[] }, i: number): boolean {
 
 const inBounds = (x: number, y: number) => x > BOUNDS.x0 && x < BOUNDS.x1 && y > BOUNDS.y0 && y < BOUNDS.y1;
 const DECO_R: Record<DecoKind, number> = { tree: 19, pine: 15, rock: 15, cactus: 9, snowman: 11, tyres: 16, crate: 14, cone: 7 };
+/** Collision radius of a piece of scenery. */
+export const obstacleRadius = (kind: DecoKind, s: number) => (DECO_R[kind] ?? 14) * s * 0.85;
+
+/**
+ * Where a checkpoint's two flags go: just off the road on each side. On the
+ * inside of a tight bend the usual spot is still road (the road folds over
+ * itself), so search outwards — straight out first, then fanning up to 60°
+ * either way — for the nearest open ground.
+ */
+function flagSpots(t: { pts: CenterPt[] }, i: number): { x: number; y: number }[] {
+  const c = t.pts[i], fan = [0, 15, -15, 30, -30, 45, -45, 60, -60].map((d) => (d * Math.PI) / 180);
+  return [-1, 1].map((side) => {
+    for (let off = c.hw + 10; off <= c.hw + 160; off += 4) {
+      for (const ang of fan) {
+        const ux = c.nx * side * Math.cos(ang) - c.ny * side * Math.sin(ang), uy = c.nx * side * Math.sin(ang) + c.ny * side * Math.cos(ang);
+        const x = c.x + ux * off, y = c.y + uy * off;
+        if (inBounds(x, y) && edgeGap(t, x, y) >= 5) return { x, y };
+      }
+    }
+    return { x: c.x + c.nx * side * (c.hw + 6), y: c.y + c.ny * side * (c.hw + 6) }; // nowhere free: on the verge
+  });
+}
 
 /** Scenery, placed deterministically. Open tracks get extra near the road to make leaving it costly. */
 function placeObstacles(id: TrackId, t: { pts: CenterPt[] }, kinds: DecoKind[], open: boolean, clutter: number): Obstacle[] {
@@ -333,7 +365,7 @@ function placeObstacles(id: TrackId, t: { pts: CenterPt[] }, kinds: DecoKind[], 
       const kind = kinds[out.length % kinds.length], s = 0.8 + r() * 0.5, rad = DECO_R[kind] * s;
       const gap = edgeGap(t, x, y);
       if (gap < rad + 12 || gap > maxGap || out.some((o) => Math.hypot(o.x - x, o.y - y) < spacing)) continue;
-      out.push({ x, y, r: rad * 0.85, s, kind, seed: hashStr(`${id}${out.length}`) });
+      out.push({ x, y, r: obstacleRadius(kind, s), s, kind, seed: hashStr(`${id}${out.length}`) });
       placed++;
     }
   };
@@ -355,26 +387,15 @@ function build(spec: Spec, edit: TrackEdit = {}): TrackDef {
     const i = ((Math.round(s / STEP) % n) + n) % n, c = pts[i];
     let off = p.off ?? 0;
     if (p.outside) off = Math.abs(off || 0.55) * (c.k > 0 ? -1 : 1); // outside of the bend
-    return { i, c, x: c.x + c.nx * off * c.hw, y: c.y + c.ny * off * c.hw };
+    return { i, c, off, x: c.x + c.nx * off * c.hw, y: c.y + c.ny * off * c.hw };
   };
 
-  // On an open track a checkpoint line reaches well off the road (until it would
-  // touch another stretch of road or the screen edge), so cutting a corner
-  // across the grass still has to cross it.
-  const reach = (i: number, side: number) => {
-    const c = pts[i];
-    let r = c.hw + 12;
-    if (!open) return r;
-    while (r < c.hw + GATE_REACH) {
-      const x = c.x + c.nx * side * (r + 8), y = c.y + c.ny * side * (r + 8);
-      if (!inBounds(x, y) || onOtherPart(t, x, y, i, 6)) break;
-      r += 8;
-    }
-    return r;
-  };
+  // A checkpoint is a line across the road (a little past each edge so a car
+  // hugging the verge still counts) — on open tracks too: cutting across the
+  // grass past it is caught as a missed checkpoint instead.
   const makeGate = (i: number): Gate => {
-    const c = pts[i], a = reach(i, -1), b = reach(i, 1);
-    return { x1: c.x - c.nx * a, y1: c.y - c.ny * a, x2: c.x + c.nx * b, y2: c.y + c.ny * b, mx: c.x, my: c.y, nx: c.tx, ny: c.ty, i };
+    const c = pts[i], r = c.hw + 12;
+    return { x1: c.x - c.nx * r, y1: c.y - c.ny * r, x2: c.x + c.nx * r, y2: c.y + c.ny * r, mx: c.x, my: c.y, nx: c.tx, ny: c.ty, i, flags: flagSpots(t, i) };
   };
   const clean = (i: number) => lineIsClean(t, i);
   if (!clean(0)) throw new Error(`${spec.id}: start line is not on a clean stretch`);
@@ -391,6 +412,23 @@ function build(spec: Spec, edit: TrackEdit = {}): TrackDef {
   });
   const clamp = (v: number | undefined, lo: number, hi: number, d: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
   const clutter = clamp(edit.clutter, 0, 3, 1);
+  const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  const circles = (list: { x: number; y: number; r: number }[] | undefined, fallback: Circle[]) =>
+    Array.isArray(list) ? list.filter((o) => num(o?.x) && num(o?.y) && inBounds(o.x, o.y)).map((o) => ({ x: o.x, y: o.y, r: clamp(o.r, 10, 90, 36) })) : fallback;
+  const pad = (i: number, off: number, len = 56, w?: number): Pad => {
+    const c = pts[i];
+    return { x: c.x + c.nx * off * c.hw, y: c.y + c.ny * off * c.hw, a: Math.atan2(c.ty, c.tx), len, w: w ?? Math.min(70, c.hw * 1.1), i, off };
+  };
+  const boosts = Array.isArray(edit.boosts)
+    ? edit.boosts.filter((b) => num(b?.at)).map((b) => pad(lapIndex(t, b.at), clamp(b.off, -0.6, 0.6, 0)))
+    : (spec.boosts ?? []).map((b) => { const p = at(b); return pad(p.i, p.off, b.len, b.w); });
+  const manualScenery = Array.isArray(edit.scenery);
+  const obstacles: Obstacle[] = manualScenery
+    ? edit.scenery!.filter((o) => num(o?.x) && num(o?.y) && o.kind in DECO_R && inBounds(o.x, o.y)).map((o, k) => {
+      const sc = clamp(o.s, 0.5, 2, 1);
+      return { x: o.x, y: o.y, s: sc, kind: o.kind, r: obstacleRadius(o.kind, sc), seed: hashStr(`${spec.id}${k}`) };
+    })
+    : placeObstacles(spec.id, t, spec.theme.deco, open, clutter);
 
   // Staggered 8-car grid behind the start line, alternating sides (pole on the left).
   const starts = Array.from({ length: 8 }, (_, k) => [30 + k * 26, k % 2 ? 0.32 : -0.32]).map(([back, side]) => {
@@ -401,11 +439,11 @@ function build(spec: Spec, edit: TrackEdit = {}): TrackDef {
   return {
     id: spec.id, name: spec.name, tag: spec.tag, difficulty: spec.difficulty,
     pts, length, gates, autoGates: !manual, starts,
-    oil: (spec.oil ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; }),
-    sand: (spec.sand ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; }),
-    boosts: (spec.boosts ?? []).map((b) => { const p = at(b); return { x: p.x, y: p.y, a: Math.atan2(p.c.ty, p.c.tx), len: b.len ?? 56, w: b.w ?? Math.min(70, p.c.hw * 1.1) }; }),
+    oil: circles(edit.oil, (spec.oil ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; })),
+    sand: circles(edit.sand, (spec.sand ?? []).map((o) => { const p = at(o); return { x: p.x, y: p.y, r: o.r }; })),
+    boosts,
     bumps, bumpLoss: clamp(edit.bumpLoss, 0, 0.8, BUMP_LOSS),
-    obstacles: placeObstacles(spec.id, t, spec.theme.deco, open, clutter),
+    obstacles, manualScenery, checkerLines: edit.checkerLines === true,
     grip: clamp(edit.grip, 0.1, 1.5, spec.grip ?? 1), baseGrip: spec.grip ?? 1,
     walls: !open,
     roughness: clamp(edit.roughness, 0, 2, 1), clutter,

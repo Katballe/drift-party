@@ -316,10 +316,10 @@ export function drawTrack(ctx: CanvasRenderingContext2D, t: TrackDef, quick: boo
   for (const b of t.boosts) drawBoost(ctx, b.x, b.y, b.a, b.len, b.w);
   for (const b of t.bumps) drawBump(ctx, b.x1, b.y1, b.x2, b.y2);
   if (!quick) for (const g of t.gates.slice(1)) {
-    if (!t.walls) drawGateLine(ctx, g, "rgba(255,255,255,0.55)"); // open track: show where the line runs
-    drawCheckpoint(ctx, t, g.i);
+    if (t.checkerLines) drawChecker(ctx, t.pts[g.i], 7, g.i);
+    drawCheckpoint(ctx, t, g);
   }
-  drawStartLine(ctx, t);
+  drawChecker(ctx, t.pts[0], 11, 42); // start / finish line
 }
 
 /** Open tracks: a tyre-and-plank barrier along the screen edge — the one wall left. */
@@ -434,12 +434,10 @@ function drawBoost(ctx: CanvasRenderingContext2D, x: number, y: number, a: numbe
   ctx.restore();
 }
 
-/** A checkpoint: a little flag on each side of the road at a key corner. */
-function drawCheckpoint(ctx: CanvasRenderingContext2D, t: TrackDef, i: number) {
-  const p = t.pts[i], fwd = Math.atan2(p.ty, p.tx);
-  for (const side of [-1, 1]) {
-    const x = p.x + p.nx * side * (p.hw + 12), y = p.y + p.ny * side * (p.hw + 12);
-    if (roadGap(t, x, y) < 2) continue; // don't plant a flag on another stretch of road
+/** A checkpoint: a little flag on each side of the road (spots chosen off the tarmac in tracks.ts). */
+function drawCheckpoint(ctx: CanvasRenderingContext2D, t: TrackDef, g: Gate) {
+  const p = t.pts[g.i], fwd = Math.atan2(p.ty, p.tx);
+  for (const { x, y } of g.flags) {
     ctx.save(); ctx.translate(x, y);
     ctx.fillStyle = "rgba(0,0,0,0.18)"; ctx.beginPath(); ctx.ellipse(3, 3, 5, 3, 0, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.lineCap = "round";
@@ -451,16 +449,16 @@ function drawCheckpoint(ctx: CanvasRenderingContext2D, t: TrackDef, i: number) {
   }
 }
 
-/** Inked checker strip along gate 0, wall to wall. */
-function drawStartLine(ctx: CanvasRenderingContext2D, t: TrackDef) {
-  const p = t.pts[0], bz = 11, rows = Math.floor((p.hw * 2 - 4) / bz);
+/** Inked two-row checker strip across the road at a centerline point (start line, and checkpoints if enabled). */
+function drawChecker(ctx: CanvasRenderingContext2D, p: TrackDef["pts"][number], bz: number, seed: number) {
+  const rows = Math.floor((p.hw * 2 - 4) / bz);
   ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.atan2(p.ty, p.tx) + Math.PI / 2);
-  const r = rng(42), x0 = -(rows * bz) / 2;
+  const r = rng(seed), x0 = -(rows * bz) / 2;
   for (let row = 0; row < rows; row++) for (let col = 0; col < 2; col++) {
     ctx.fillStyle = (row + col) % 2 === 0 ? "#f4efe2" : INK;
     ctx.fillRect(x0 + row * bz + (r() - 0.5), -bz + col * bz + (r() - 0.5), bz, bz);
   }
-  inkShape(ctx, sampleRoundRect(x0 - 1, -bz - 1, rows * bz + 2, bz * 2 + 2, 1, 6), 0.8, 77, null, INK, 1.5);
+  inkShape(ctx, sampleRoundRect(x0 - 1, -bz - 1, rows * bz + 2, bz * 2 + 2, 1, 6), 0.8, seed + 35, null, INK, 1.5);
   ctx.restore();
 }
 

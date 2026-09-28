@@ -361,6 +361,34 @@ console.log("\nTrack edits");
   applyTrackEdits({});
   ok(TRACKS.frosty.grip === 0.5, "clearing edits restores the track");
 }
+{
+  // Every checkpoint gets two flags, both on open ground — incl. the inside of Hairpin Heights' hairpins.
+  const bad: string[] = [];
+  for (const id of TRACK_ORDER) for (const t of [TRACKS[id], buildTrack(id, { checkpoints: [0.2, 0.4, 0.6, 0.8] })]) {
+    t.gates.slice(1).forEach((g, k) => {
+      if (g.flags.length !== 2 || g.flags.some((f) => edgeGap(t, f.x, f.y) < 4)) bad.push(`${id} CP${k + 1}`);
+    });
+  }
+  ok(!bad.length, `every checkpoint has two flags, both off the tarmac${bad.length ? ` (not: ${bad.join(", ")})` : ""}`);
+  // Checkpoint lines only span the road, on open tracks too.
+  const open = buildTrack("sunny", { walls: false });
+  ok(open.gates.every((g) => Math.abs(Math.hypot(g.x2 - g.x1, g.y2 - g.y1) - 2 * (open.pts[g.i].hw + 12)) < 0.01), "checkpoint lines stay on the road on open tracks");
+  ok(buildTrack("snake", { checkerLines: true }).checkerLines && !TRACKS.snake.checkerLines, "checkered checkpoint lines are an option (off by default)");
+}
+{
+  // Every feature can be placed / removed individually.
+  const t = buildTrack("sunny", {
+    sand: [{ x: 700, y: 500, r: 40 }], oil: [], boosts: [{ at: 0.5, off: 0.3 }, { at: 0.9, off: 5 }],
+    scenery: [{ x: 800, y: 480, kind: "rock", s: 1.2 }, { x: 1, y: 1, kind: "rock", s: 1 }, { x: 900, y: 480, kind: "nope" as any, s: 1 }],
+  });
+  ok(t.sand.length === 1 && t.sand[0].x === 700 && t.oil.length === 0, "hand-placed sand / oil replace the track's own");
+  ok(t.boosts.length === 2 && t.boosts[0].off === 0.3 && t.boosts[1].off === 0.6 && t.boosts.every((b) => onRoad(t, b.x, b.y, 5)), "hand-placed boost pads sit on the road (offset clamped)");
+  ok(t.manualScenery && t.obstacles.length === 1 && t.obstacles[0].kind === "rock", "hand-placed scenery replaces the automatic scenery (off-screen / unknown pieces dropped)");
+  const pads = new Race(buildTrack("sunny", { boosts: [{ at: 0.1, off: 0 }] }), entrants(["normal"]), 3, fixed);
+  let boosts = 0;
+  run(pads, 20, (r) => { boosts += r.cars[0].boostT >= 1.09 ? 1 : 0; });
+  ok(boosts > 0, "a hand-placed boost pad works");
+}
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nAll checks passed");
 process.exit(failures ? 1 : 0);

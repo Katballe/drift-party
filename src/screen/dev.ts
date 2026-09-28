@@ -2,16 +2,16 @@
 // --mode devtools`; the production build never includes this module).
 //
 // Edits are drafts kept in this browser (localStorage) and layered over the
-// shipped track-edits.json, so you can try things — speed bumps, hand-placed
-// checkpoints, ice grip, open tracks with no walls — in real races with real
-// phones, then export the JSON and commit it when you're happy.
+// shipped track-edits.json, so you can try things — checkpoints, speed bumps,
+// boost pads, sand, oil, scenery, ice grip, open tracks with no walls — in
+// real races with real phones, then export the JSON and commit it.
 
 import type { Renderer } from "./render";
 import { drawGateLine } from "./render";
 import type { Race } from "./sim";
 import {
-  BUMP_LOSS, TRACKS, TRACK_EDITS, TRACK_ORDER, applyTrackEdits, lapFraction, lineIsClean,
-  type TrackDef, type TrackEdit, type TrackEdits, type TrackId,
+  BOUNDS, BUMP_LOSS, TRACKS, TRACK_EDITS, TRACK_ORDER, applyTrackEdits, edgeGap, lapFraction, lapIndex, lineIsClean, obstacleRadius,
+  type Seg, type TrackDef, type TrackEdit, type TrackEdits, type TrackId,
 } from "./tracks";
 
 /** The parts of the big-screen app the editor drives. */
@@ -29,7 +29,27 @@ export interface DevHost {
   renderUI(): void;
 }
 
-type Tool = "checkpoint" | "bump";
+/** Things you can place on a track, one tool each. */
+type Kind = "checkpoint" | "bump" | "boost" | "sand" | "oil" | "scenery";
+type Tool = Kind | "erase";
+interface ToolInfo { id: Tool; key: string; icon: string; label: string; }
+const TOOLS: ToolInfo[] = [
+  { id: "checkpoint", key: "C", icon: "🚩", label: "Checkpoint" },
+  { id: "bump", key: "B", icon: "▰", label: "Speed bump" },
+  { id: "boost", key: "P", icon: "⚡", label: "Boost pad" },
+  { id: "sand", key: "S", icon: "▒", label: "Sand / snow" },
+  { id: "oil", key: "O", icon: "●", label: "Oil slick" },
+  { id: "scenery", key: "T", icon: "🌲", label: "Scenery" },
+  { id: "erase", key: "X", icon: "⌫", label: "Eraser" },
+];
+/** Which TrackEdit list holds each kind. */
+const FIELD: Record<Kind, keyof TrackEdit> = { checkpoint: "checkpoints", bump: "bumps", boost: "boosts", sand: "sand", oil: "oil", scenery: "scenery" };
+const NAMES: Record<Kind, [string, string]> = {
+  checkpoint: ["Checkpoint", "Checkpoints"], bump: ["Speed bump", "Speed bumps"], boost: ["Boost pad", "Boost pads"],
+  sand: ["Sand patch", "Sand / snow"], oil: ["Oil slick", "Oil slicks"], scenery: ["Scenery", "Scenery"],
+};
+
+interface Hit { kind: Kind; index: number; }
 /** A draft field set to null means "back to the spec default", even if the shipped file sets it. */
 type Draft = { [K in keyof TrackEdit]?: TrackEdit[K] | null };
 type Drafts = Partial<Record<TrackId, Draft>>;
@@ -40,21 +60,30 @@ const PANEL_W = 330;
 const load = <T>(k: string, d: T): T => { try { const v = localStorage.getItem(k); return v ? (JSON.parse(v) as T) : d; } catch { return d; } };
 const save = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage blocked */ } };
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+const r1 = (v: number) => Math.round(v * 10) / 10, r2 = (v: number) => Math.round(v * 100) / 100;
+const inside = (x: number, y: number) => x > BOUNDS.x0 && x < BOUNDS.x1 && y > BOUNDS.y0 && y < BOUNDS.y1;
+function segDist(px: number, py: number, g: Seg) {
+  const ex = g.x2 - g.x1, ey = g.y2 - g.y1, u = Math.max(0, Math.min(1, ((px - g.x1) * ex + (py - g.y1) * ey) / (ex * ex + ey * ey || 1)));
+  return Math.hypot(px - (g.x1 + ex * u), py - (g.y1 + ey * u));
+}
 
 export class DevTools {
   open: boolean;
   debug: boolean;
   tool: Tool;
+  patchR: number;
   drafts: Drafts = load<Drafts>(DRAFT_KEY, {});
-  hover: { i: number; remove: boolean; ok: boolean } | null = null;
+  hover: { x: number; y: number } | null = null;
   msg = "";
   panel: HTMLElement;
   private html = "";
   private pending: Draft | null = null;
 
   constructor(private host: DevHost) {
-    const ui = load(UI_KEY, { open: false, debug: false, tool: "checkpoint" as Tool });
-    this.open = ui.open; this.debug = ui.debug; this.tool = ui.tool === "bump" ? "bump" : "checkpoint";
+    const ui = load(UI_KEY, { open: false, debug: false, tool: "checkpoint" as Tool, patchR: 38 });
+    this.open = ui.open; this.debug = ui.debug;
+    this.tool = TOOLS.some((t) => t.id === ui.tool) ? ui.tool : "checkpoint";
+    this.patchR = Math.min(70, Math.max(16, Number(ui.patchR) || 38));
     this.panel = document.createElement("div");
     this.panel.id = "dev";
     this.panel.style.cssText = `position:absolute;top:0;right:0;bottom:0;width:${PANEL_W}px;background:#f0ede4;border-left:3px solid #1a2a0a;overflow-y:auto;z-index:16;display:none;font-family:Caveat,cursive;color:#1a2a0a;padding:12px 14px 20px;box-shadow:-6px 0 24px rgba(0,0,0,0.35)`;
@@ -63,7 +92,7 @@ export class DevTools {
     this.panel.addEventListener("input", (e) => this.onSlider(e, false));
     this.panel.addEventListener("change", (e) => this.onSlider(e, true));
     const canvas = document.getElementById("raceCanvas")!;
-    canvas.addEventListener("mousemove", (e) => this.onMove(e));
+    canvas.addEventListener("mousemove", (e) => { if (this.editing) this.hover = this.host.renderer.toLogical(e.clientX, e.clientY); });
     canvas.addEventListener("mouseleave", () => { this.hover = null; });
     canvas.addEventListener("click", (e) => this.onCanvasClick(e));
     window.addEventListener("resize", () => this.fitStage());
@@ -99,7 +128,28 @@ export class DevTools {
     if (final) this.render(true);
   }
 
-  saveUI() { save(UI_KEY, { open: this.open, debug: this.debug, tool: this.tool }); }
+  saveUI() { save(UI_KEY, { open: this.open, debug: this.debug, tool: this.tool, patchR: this.patchR }); }
+
+  /** The current list for a kind, in the form its TrackEdit field stores. */
+  private list(kind: Kind): unknown[] {
+    const t = this.track;
+    switch (kind) {
+      case "checkpoint": return t.gates.slice(1).map((g) => lapFraction(t, g.i));
+      case "bump": return t.bumps.map((b) => lapFraction(t, b.i));
+      case "boost": return t.boosts.map((p) => ({ at: lapFraction(t, p.i), off: r2(p.off) }));
+      case "sand": return t.sand.map((c) => ({ x: r1(c.x), y: r1(c.y), r: c.r }));
+      case "oil": return t.oil.map((c) => ({ x: r1(c.x), y: r1(c.y), r: c.r }));
+      case "scenery": return t.obstacles.map((o) => ({ x: r1(o.x), y: r1(o.y), kind: o.kind, s: r2(o.s) }));
+    }
+  }
+  private count(kind: Kind) { return this.list(kind).length; }
+  /** Is this kind's list edited (by a draft or the shipped file)? */
+  private edited(kind: Kind) { return (this.effective()[this.id] as Record<string, unknown> | undefined)?.[FIELD[kind]] !== undefined; }
+
+  private setList(kind: Kind, next: unknown[]) {
+    const sorted = kind === "checkpoint" || kind === "bump" ? (next as number[]).sort((a, b) => a - b) : next;
+    this.set({ [FIELD[kind]]: sorted } as Draft);
+  }
 
   // ── open / close / test ──────────────────────────────────────────────────
   toggle(open = !this.open) {
@@ -121,6 +171,8 @@ export class DevTools {
     this.render(true);
   }
 
+  setTool(tool: Tool) { this.tool = tool; this.msg = ""; this.saveUI(); this.render(true); }
+
   /** Race this track now with whoever is in the lobby (adds bots if nobody is). */
   testDrive() {
     this.selectTrack(this.id);
@@ -131,19 +183,18 @@ export class DevTools {
   // ── keys ─────────────────────────────────────────────────────────────────
   /** Returns true when the key was a dev shortcut. */
   onKey(e: KeyboardEvent): boolean {
-    switch (e.code) {
-      case "KeyG": this.toggleDebug(); return true;
-      case "KeyE": if (this.host.phase === "LOBBY") { this.toggle(); return true; } return false;
-      case "KeyC": if (this.editing) { this.tool = "checkpoint"; this.saveUI(); this.render(true); return true; } return false;
-      case "KeyB": if (this.editing) { this.tool = "bump"; this.saveUI(); this.render(true); return true; } return false;
-      case "Escape": if (this.editing) { this.toggle(false); return true; } return false;
-      case "Enter": case "NumpadEnter": if (this.editing) { this.testDrive(); return true; } return false;
-    }
+    if (e.code === "KeyG") { this.toggleDebug(); return true; }
+    if (e.code === "KeyE" && this.host.phase === "LOBBY") { this.toggle(); return true; }
+    if (!this.editing) return false;
+    const tool = TOOLS.find((t) => `Key${t.key}` === e.code);
+    if (tool) { this.setTool(tool.id); return true; }
+    if (e.code === "Escape") { this.toggle(false); return true; }
+    if (e.code === "Enter" || e.code === "NumpadEnter") { this.testDrive(); return true; }
     return false;
   }
 
   // ── canvas editing ───────────────────────────────────────────────────────
-  /** Nearest centerline index to a logical point, if the point is on (or right next to) the road. */
+  /** Nearest centerline index to a point, if the point is on (or right next to) the road. */
   private roadAt(x: number, y: number): number | null {
     const P = this.track.pts;
     let best = -1, bd = Infinity;
@@ -152,60 +203,123 @@ export class DevTools {
   }
 
   private arcGap(a: number, b: number) { const n = this.track.pts.length, d = Math.abs(a - b) % n; return Math.min(d, n - d) * 8; }
-  private markers(): number[] { return this.tool === "checkpoint" ? this.track.gates.slice(1).map((g) => g.i) : this.track.bumps.map((b) => b.i); }
 
-  private onMove(e: MouseEvent) {
-    if (!this.editing) return;
-    const p = this.host.renderer.toLogical(e.clientX, e.clientY), i = this.roadAt(p.x, p.y);
-    if (i === null) { this.hover = null; return; }
-    const remove = this.markers().some((m) => this.arcGap(m, i) < 45);
-    this.hover = { i, remove, ok: remove || this.placeable(i) === "" };
+  /** Everything under a point, most specific first (what the eraser takes). */
+  private hitsAt(x: number, y: number): Hit[] {
+    const t = this.track, out: Hit[] = [];
+    t.gates.slice(1).forEach((g, k) => {
+      if (segDist(x, y, g) < 14 || g.flags.some((f) => Math.hypot(f.x - x, f.y - 10 - y) < 16)) out.push({ kind: "checkpoint", index: k });
+    });
+    t.bumps.forEach((b, k) => { if (segDist(x, y, b) < 12) out.push({ kind: "bump", index: k }); });
+    t.boosts.forEach((p, k) => {
+      const dx = x - p.x, dy = y - p.y, ca = Math.cos(p.a), sa = Math.sin(p.a);
+      if (Math.abs(dx * ca + dy * sa) < p.len / 2 + 6 && Math.abs(-dx * sa + dy * ca) < p.w / 2 + 6) out.push({ kind: "boost", index: k });
+    });
+    t.oil.forEach((c, k) => { if (Math.hypot(c.x - x, c.y - y) < c.r) out.push({ kind: "oil", index: k }); });
+    t.sand.forEach((c, k) => { if (Math.hypot(c.x - x, c.y - y) < c.r) out.push({ kind: "sand", index: k }); });
+    t.obstacles.forEach((o, k) => { if (Math.hypot(o.x - x, o.y - y) < o.r + 6) out.push({ kind: "scenery", index: k }); });
+    return out;
   }
 
-  /** Why a marker can't go here ("" = it can). */
-  private placeable(i: number): string {
-    if (!lineIsClean(this.track, i)) return "Not where the road crosses itself — pick a clean stretch.";
-    if (this.arcGap(i, 0) < (this.tool === "checkpoint" ? 60 : 40)) return "Too close to the start line.";
-    return "";
+  /** What clicking here would do with the current tool. */
+  private intent(x: number, y: number): { remove: Hit } | { add: unknown } | { error: string } | null {
+    const hits = this.hitsAt(x, y);
+    if (this.tool === "erase") return hits[0] ? { remove: hits[0] } : null;
+    const kind = this.tool, same = hits.find((h) => h.kind === kind);
+    if (same) return { remove: same };
+    const t = this.track;
+    if (kind === "checkpoint" || kind === "bump" || kind === "boost") {
+      const i = this.roadAt(x, y);
+      if (i === null) return { error: "Click on the road." };
+      if (!lineIsClean(t, i)) return { error: "Not where the road crosses itself — pick a clean stretch." };
+      if (kind === "checkpoint" && this.arcGap(i, 0) < 60) return { error: "Too close to the start line." };
+      if (kind === "bump" && this.arcGap(i, 0) < 40) return { error: "Too close to the start line." };
+      if (kind === "checkpoint" && t.gates.slice(1).some((g) => this.arcGap(g.i, i) < 50)) return { error: "Too close to another checkpoint." };
+      if (kind === "boost") {
+        const c = t.pts[i], off = Math.max(-0.55, Math.min(0.55, ((x - c.x) * c.nx + (y - c.y) * c.ny) / c.hw));
+        return { add: { at: lapFraction(t, i), off: r2(off) } };
+      }
+      return { add: lapFraction(t, i) };
+    }
+    if (!inside(x, y)) return { error: "Keep it inside the screen." };
+    if (kind === "sand" || kind === "oil") return { add: { x: r1(x), y: r1(y), r: this.patchR } };
+    const deco = t.theme.deco[this.count("scenery") % t.theme.deco.length];
+    if (edgeGap(t, x, y) < obstacleRadius(deco, 1) + 4) return { error: "Scenery goes off the road." };
+    return { add: { x: r1(x), y: r1(y), kind: deco, s: 1 } };
   }
 
   private onCanvasClick(e: MouseEvent) {
     if (!this.editing) return;
-    const p = this.host.renderer.toLogical(e.clientX, e.clientY), i = this.roadAt(p.x, p.y);
-    if (i === null) { this.msg = "Click on the road."; this.render(true); return; }
-    const t = this.track, current = this.markers(), hit = current.find((m) => this.arcGap(m, i) < 45);
-    let next: number[];
-    if (hit !== undefined) {
-      next = current.filter((m) => m !== hit);
-      this.msg = this.tool === "checkpoint" ? "Checkpoint removed." : "Speed bump removed.";
-    } else {
-      const why = this.placeable(i);
-      if (why) { this.msg = why; this.render(true); return; }
-      next = [...current, i];
-      this.msg = this.tool === "checkpoint" ? "Checkpoint added." : "Speed bump added.";
+    const p = this.host.renderer.toLogical(e.clientX, e.clientY), it = this.intent(p.x, p.y);
+    if (!it) { this.msg = "Nothing to remove here."; this.render(true); return; }
+    if ("error" in it) { this.msg = it.error; this.render(true); return; }
+    if ("remove" in it) {
+      const { kind, index } = it.remove;
+      this.msg = `${NAMES[kind][0]} removed.`;
+      this.setList(kind, this.list(kind).filter((_, j) => j !== index));
+      return;
     }
-    const fr = next.map((m) => lapFraction(t, m)).sort((a, b) => a - b);
-    this.set(this.tool === "checkpoint" ? { checkpoints: fr } : { bumps: fr });
-    this.onMove(e);
+    const kind = this.tool as Kind;
+    this.msg = `${NAMES[kind][0]} added.`;
+    this.setList(kind, [...this.list(kind), it.add]);
   }
 
   // ── overlays ─────────────────────────────────────────────────────────────
-  /** Editor view: numbered checkpoint lines + what a click would do. */
+  /** Editor view: numbered checkpoints and bumps, plus what a click would do. */
   editorOverlay = (ctx: CanvasRenderingContext2D) => {
     const t = this.track, time = performance.now() / 1000;
     this.drawGates(ctx, t, time);
     t.bumps.forEach((b, k) => this.tag(ctx, (b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2 - 16, `B${k + 1}`, "#1a2a0a", "#FFD600"));
     const h = this.hover;
     if (!h) return;
-    const c = t.pts[h.i], r = c.hw + 14;
+    const it = this.intent(h.x, h.y);
     ctx.save();
-    ctx.strokeStyle = h.remove ? "#E63946" : h.ok ? (this.tool === "checkpoint" ? "#2E7D32" : "#FF8F00") : "rgba(120,120,120,0.8)";
-    ctx.lineWidth = 6; ctx.lineCap = "round"; ctx.globalAlpha = 0.85;
-    ctx.beginPath(); ctx.moveTo(c.x - c.nx * r, c.y - c.ny * r); ctx.lineTo(c.x + c.nx * r, c.y + c.ny * r); ctx.stroke();
+    ctx.lineWidth = 4; ctx.lineCap = "round"; ctx.setLineDash([8, 6]);
+    if (it && "remove" in it) {
+      ctx.strokeStyle = "#E63946";
+      this.outline(ctx, it.remove);
+      ctx.restore();
+      this.tag(ctx, h.x, h.y - 26, `✕ remove ${NAMES[it.remove.kind][0].toLowerCase()}`, "#fff", "#E63946");
+      return;
+    }
+    if (it && "error" in it) { ctx.restore(); this.tag(ctx, h.x, h.y - 26, it.error, "#fff", "rgba(0,0,0,0.75)"); return; }
+    if (it && "add" in it) {
+      ctx.strokeStyle = "#2E7D32";
+      const a = it.add as any, kind = this.tool as Kind;
+      if (kind === "checkpoint" || kind === "bump") {
+        const c = t.pts[lapIndex(t, a)], r = c.hw + 12;
+        ctx.setLineDash([]); ctx.lineWidth = 6; ctx.globalAlpha = 0.8;
+        ctx.beginPath(); ctx.moveTo(c.x - c.nx * r, c.y - c.ny * r); ctx.lineTo(c.x + c.nx * r, c.y + c.ny * r); ctx.stroke();
+      } else if (kind === "boost") {
+        const c = t.pts[lapIndex(t, a.at)];
+        ctx.translate(c.x + c.nx * a.off * c.hw, c.y + c.ny * a.off * c.hw); ctx.rotate(Math.atan2(c.ty, c.tx));
+        ctx.strokeRect(-28, -Math.min(70, c.hw * 1.1) / 2, 56, Math.min(70, c.hw * 1.1));
+      } else {
+        const r = kind === "scenery" ? obstacleRadius(a.kind, 1) : a.r;
+        ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
+      const what = this.tool === "scenery" ? a.kind : NAMES[this.tool as Kind][0].toLowerCase();
+      this.tag(ctx, h.x, h.y - 26, `+ ${what}`, "#fff", "#2E7D32");
+      return;
+    }
     ctx.restore();
-    const label = h.remove ? "✕ remove" : !h.ok ? "can't place here" : this.tool === "checkpoint" ? "+ checkpoint" : "+ speed bump";
-    this.tag(ctx, c.x + c.nx * (r + 20), c.y + c.ny * (r + 20), label, "#fff", "rgba(0,0,0,0.75)");
   };
+
+  /** Outline one placed item (for "click to remove"). */
+  private outline(ctx: CanvasRenderingContext2D, hit: Hit) {
+    const t = this.track;
+    const line = (g: Seg) => { ctx.setLineDash([]); ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(g.x1, g.y1); ctx.lineTo(g.x2, g.y2); ctx.stroke(); };
+    const ring = (x: number, y: number, r: number) => { ctx.beginPath(); ctx.arc(x, y, r + 3, 0, Math.PI * 2); ctx.stroke(); };
+    switch (hit.kind) {
+      case "checkpoint": line(t.gates[hit.index + 1]); break;
+      case "bump": line(t.bumps[hit.index]); break;
+      case "boost": { const p = t.boosts[hit.index]; ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.strokeRect(-p.len / 2 - 3, -p.w / 2 - 3, p.len + 6, p.w + 6); break; }
+      case "sand": { const c = t.sand[hit.index]; ring(c.x, c.y, c.r); break; }
+      case "oil": { const c = t.oil[hit.index]; ring(c.x, c.y, c.r); break; }
+      case "scenery": { const o = t.obstacles[hit.index]; ring(o.x, o.y, o.r); break; }
+    }
+  }
 
   /** Race view (G): every checkpoint line, and a thread from each car to the checkpoint it needs next. */
   raceOverlay(race: Race | null): ((ctx: CanvasRenderingContext2D) => void) | undefined {
@@ -233,6 +347,7 @@ export class DevTools {
     ctx.save();
     ctx.font = "700 16px Caveat, cursive";
     const w = ctx.measureText(text).width + 12;
+    x = Math.max(w / 2 + 4, Math.min(1596 - w / 2, x));
     ctx.fillStyle = bg; ctx.beginPath(); ctx.roundRect(x - w / 2, y - 11, w, 22, 11); ctx.fill();
     ctx.fillStyle = fg; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, x, y + 1);
     ctx.restore();
@@ -263,22 +378,21 @@ export class DevTools {
   private onPanelClick(e: MouseEvent) {
     const el = (e.target as HTMLElement).closest("[data-dev]") as HTMLElement | null;
     if (!el) return;
-    const t = this.track;
+    const t = this.track, kind = el.dataset.kind as Kind | undefined;
     switch (el.dataset.dev) {
       case "close": this.toggle(false); return;
       case "track": this.selectTrack(el.dataset.track as TrackId); return;
-      case "tool": this.tool = el.dataset.tool as Tool; this.saveUI(); break;
+      case "tool": this.setTool(el.dataset.tool as Tool); return;
+      case "reset": if (kind) { this.set({ [FIELD[kind]]: null } as Draft); this.msg = `${NAMES[kind][1]} back to the track's own.`; } break;
+      case "clear": if (kind) { this.set({ [FIELD[kind]]: [] } as Draft); this.msg = `All ${NAMES[kind][1].toLowerCase()} removed.`; } break;
+      case "checker": this.set({ checkerLines: el.dataset.on === "1" ? true : null }); break;
       case "walls": this.set({ walls: el.dataset.on === "1" ? null : false }); this.msg = el.dataset.on === "1" ? "Walls are back." : "Open track: drive anywhere — the screen edge is the wall."; break;
-      case "autoCheckpoints": this.set({ checkpoints: null }); this.msg = "Checkpoints back to automatic (key corners)."; break;
-      case "clearCheckpoints": this.set({ checkpoints: [] }); this.msg = "Only the start line counts now — add your own."; break;
-      case "clearBumps": this.set({ bumps: [] }); this.msg = "Speed bumps cleared."; break;
       case "discardTrack": delete this.drafts[this.id]; save(DRAFT_KEY, this.drafts); this.apply(); this.msg = `Draft edits for ${t.name} discarded.`; break;
       case "discardAll": this.drafts = {}; save(DRAFT_KEY, this.drafts); this.apply(); this.msg = "All draft edits discarded."; break;
       case "debug": this.toggleDebug(); return;
       case "test": this.testDrive(); return;
       case "copy": {
-        const json = this.exportJSON();
-        navigator.clipboard?.writeText(json).then(() => { this.msg = "Copied — paste it over src/screen/track-edits.json."; this.render(true); })
+        navigator.clipboard?.writeText(this.exportJSON()).then(() => { this.msg = "Copied — paste it over src/screen/track-edits.json."; this.render(true); })
           .catch(() => { this.msg = "Clipboard blocked — use Download instead."; this.render(true); });
         return;
       }
@@ -297,9 +411,16 @@ export class DevTools {
   /** Sliders: live preview while dragging (once a frame), saved when released. */
   private onSlider(e: Event, final: boolean) {
     const el = e.target as HTMLInputElement;
+    const v = Number(el.value);
+    if (el.dataset.ui === "patchR") {
+      this.patchR = v;
+      const out = this.panel.querySelector<HTMLElement>('[data-out="patchR"]');
+      if (out) out.textContent = String(v);
+      if (final) this.saveUI();
+      return;
+    }
     const key = el.dataset.edit as keyof TrackEdit | undefined;
     if (!key) return;
-    const v = Number(el.value);
     const out = this.panel.querySelector<HTMLElement>(`[data-out="${key}"]`);
     if (out) out.textContent = v.toFixed(2);
     const patch: Draft = { [key]: v };
@@ -315,15 +436,27 @@ export class DevTools {
     const d = this.drafts[id] ?? {}, dirty = Object.keys(d).length > 0;
     const anyDirty = JSON.stringify(this.effective()) !== JSON.stringify(TRACK_EDITS);
     const btn = (dev: string, label: string, on = false, extra = "") =>
-      `<button data-dev="${dev}" ${extra} style="border:2px solid ${on ? "#1a2a0a" : "#d8d2bd"};background:${on ? "#1a2a0a" : "#fff"};color:${on ? "#FFD600" : "#333"};border-radius:9px;padding:4px 10px;font:700 17px Caveat,cursive;cursor:pointer">${label}</button>`;
+      `<button data-dev="${dev}" ${extra} style="border:2px solid ${on ? "#1a2a0a" : "#d8d2bd"};background:${on ? "#1a2a0a" : "#fff"};color:${on ? "#FFD600" : "#333"};border-radius:9px;padding:4px 9px;font:700 17px Caveat,cursive;cursor:pointer">${label}</button>`;
+    const mini = (dev: string, label: string, extra = "") =>
+      `<button data-dev="${dev}" ${extra} style="border:1px solid #d8d2bd;background:#fff;color:#555;border-radius:7px;padding:1px 7px;font:700 15px Caveat,cursive;cursor:pointer">${label}</button>`;
     const h = (text: string) => `<div style="margin:14px 0 5px;font-size:21px;font-weight:700;border-bottom:2px dashed #d8d2bd">${text}</div>`;
     const hint = (text: string) => `<div style="font-size:15px;color:#7a7460;line-height:1.2;margin-top:3px">${text}</div>`;
-    const slider = (key: keyof TrackEdit, label: string, min: number, max: number, step: number, value: number, note: string) => `
-      <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:18px;margin-top:8px">${label}<b data-out="${key}" style="font-family:sans-serif;font-size:14px">${value.toFixed(2)}</b></div>
-      <input type="range" data-edit="${key}" min="${min}" max="${max}" step="${step}" value="${value}" style="width:100%;accent-color:#1a2a0a" />
-      ${hint(note)}`;
+    const slider = (key: string, label: string, min: number, max: number, step: number, value: number, note: string, attr = "data-edit") => `
+      <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:18px;margin-top:8px">${label}<b data-out="${key}" style="font-family:sans-serif;font-size:14px">${attr === "data-edit" ? value.toFixed(2) : value}</b></div>
+      <input type="range" ${attr}="${key}" min="${min}" max="${max}" step="${step}" value="${value}" style="width:100%;accent-color:#1a2a0a" />
+      ${note ? hint(note) : ""}`;
     const tracks = TRACK_ORDER.map((k) => btn("track", TRACKS[k].name.split(" ")[0] + (this.drafts[k] && Object.keys(this.drafts[k]!).length ? " •" : ""), k === id, `data-track="${k}"`)).join(" ");
-    const cps = t.gates.length - 1;
+    const tools = TOOLS.map((tl) => btn("tool", `${tl.icon} ${tl.label} <span style="opacity:.55;font-size:14px">${tl.key}</span>`, this.tool === tl.id, `data-tool="${tl.id}"`)).join(" ");
+    const kinds: Kind[] = ["checkpoint", "bump", "boost", "sand", "oil", "scenery"];
+    const rows = kinds.map((k) => {
+      const edited = this.edited(k), n = this.count(k);
+      const status = k === "checkpoint" ? (t.autoGates ? "automatic" : "hand-placed") : k === "scenery" ? (t.manualScenery ? "hand-placed" : "automatic") : edited ? "edited" : "original";
+      return `<div style="display:flex;align-items:center;gap:6px;font-size:17px;padding:2px 0">
+        <span style="flex:1">${NAMES[k][1]} <b>${n}</b> <span style="color:#9a937c;font-size:14px">${status}</span></span>
+        ${edited ? mini("reset", k === "checkpoint" ? "auto" : "reset", `data-kind="${k}"`) : ""}${n ? mini("clear", "clear", `data-kind="${k}"`) : ""}</div>`;
+    }).join("");
+    const toolHint = this.tool === "erase" ? "Click anything placed to remove it."
+      : `Click to add a ${NAMES[this.tool][0].toLowerCase()} · click an existing one to remove it.`;
     return `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
         <div style="font-size:28px;font-weight:700;line-height:1">🛠 Track editor</div>
@@ -332,19 +465,19 @@ export class DevTools {
       ${hint("Dev build only. Changes are drafts in this browser until you export them.")}
       <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:10px">${tracks}</div>
 
-      ${h("Place on the road")}
-      <div style="display:flex;gap:6px">${btn("tool", "🚩 Checkpoint (C)", this.tool === "checkpoint", 'data-tool="checkpoint"')} ${btn("tool", "▰ Speed bump (B)", this.tool === "bump", 'data-tool="bump"')}</div>
-      ${hint("Click the road to add one · click an existing one to remove it.")}
+      ${h("Place & remove")}
+      <div style="display:flex;flex-wrap:wrap;gap:5px">${tools}</div>
+      ${hint(toolHint)}
+      ${this.tool === "sand" || this.tool === "oil" ? slider("patchR", "New patch size", 16, 70, 2, this.patchR, "", "data-ui") : ""}
       ${this.msg ? `<div style="margin-top:6px;background:#fff;border-left:4px solid #FFB300;padding:4px 8px;font-size:16px;border-radius:6px">${esc(this.msg)}</div>` : ""}
 
-      ${h(`Checkpoints · ${cps} + start`)}
-      <div style="font-size:17px">${t.autoGates ? "Automatic — the middle of every real bend." : "Hand-placed."}</div>
-      <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">${t.autoGates ? "" : btn("autoCheckpoints", "Back to automatic")} ${btn("clearCheckpoints", "Clear all")}</div>
-      ${hint("They must be crossed in order. Skip one (e.g. by cutting across the grass) and that lap doesn't count until you go back.")}
-
-      ${h(`Speed bumps · ${t.bumps.length}`)}
-      ${slider("bumpLoss", "Speed lost at full speed", 0.05, 0.7, 0.05, t.bumpLoss, `Default ${BUMP_LOSS}. Slower cars lose less; the Monster Truck barely notices.`)}
-      ${t.bumps.length ? `<div style="margin-top:5px">${btn("clearBumps", "Remove all bumps")}</div>` : ""}
+      ${h("On this track")}
+      ${rows}
+      ${hint("reset = back to the track's own layout · clear = remove them all")}
+      <div style="font-size:18px;margin-top:8px">Checkpoint look</div>
+      <div style="display:flex;gap:6px;margin-top:3px">${btn("checker", "🚩 Flags", !t.checkerLines, 'data-on="0"')} ${btn("checker", "🏁 Flags + checkered line", t.checkerLines, 'data-on="1"')}</div>
+      ${hint("Checkpoints must be crossed in order, on the road. Skip one (e.g. by cutting across the grass) and the lap doesn't count until you go back.")}
+      ${slider("bumpLoss", "Speed bump: speed lost at full speed", 0.05, 0.7, 0.05, t.bumpLoss, `Default ${BUMP_LOSS}. Slower cars lose less; the Monster Truck barely notices.`)}
 
       ${h("Surface")}
       ${slider("grip", "Road grip", 0.1, 1.5, 0.05, t.grip, `1 = tarmac, lower = icier (this track's default is ${t.baseGrip.toFixed(2)}). Oil and drifting still reduce it further.`)}
@@ -354,7 +487,8 @@ export class DevTools {
       ${t.walls ? hint("The road edge is a wall.") : `
         ${hint(`Drive anywhere — <b>${t.theme.terrain.name}</b> off the road slows you and loosens grip, the scenery is solid, and the screen edge is a hard wall.`)}
         ${slider("roughness", `Off-road penalty (${t.theme.terrain.name})`, 0, 2, 0.1, t.roughness, `1 = default: top speed ×${t.theme.terrain.slow} on the terrain. 0 = no penalty.`)}
-        ${slider("clutter", "Obstacles near the road", 0, 3, 0.25, t.clutter, `How much extra scenery to dodge off the road (${t.obstacles.length} obstacles now).`)}`}
+        ${t.manualScenery ? hint(`Scenery is hand-placed (${t.obstacles.length}) — reset it above to go back to automatic.`)
+          : slider("clutter", "Extra scenery near the road", 0, 3, 0.25, t.clutter, `Automatic scenery (${t.obstacles.length} now). Or place/remove pieces with the 🌲 tool.`)}`}
 
       ${h("Try it")}
       <div style="display:flex;gap:6px;flex-wrap:wrap">
@@ -371,6 +505,6 @@ export class DevTools {
         ${anyDirty ? btn("discardAll", "Discard all drafts") : ""}
       </div>
       ${hint("To ship: the exported JSON replaces <code>src/screen/track-edits.json</code>; commit it and it goes out with the next deploy.")}
-      ${hint("Keys: E editor · C/B tools · Enter test drive · G checkpoint lines · Esc close")}`;
+      ${hint("Keys: E editor · C B P S O T X tools · Enter test drive · G checkpoint lines · Esc close")}`;
   }
 }
