@@ -7,6 +7,16 @@ export interface NetHandlers {
   onMessage: (msg: AnyMessage) => void;
 }
 
+/**
+ * The app's root path: "/" normally, "/drift-party/" when served under a path
+ * (the katballe-studio dev site). Pages live at <root>, <root>screen/ and
+ * <root>controller/, and the relay at <root>ws.
+ */
+export function appRoot(): string {
+  const m = /^(.*\/)(screen|controller)(\/|$)/.exec(location.pathname);
+  return m ? m[1] : location.pathname.replace(/[^/]*$/, "");
+}
+
 const PING_EVERY = 5000;   // relay auto-answers "ping" with "pong" without waking the DO
 const DEAD_AFTER = 13000;  // no pong for this long → assume a half-open socket and reconnect
 
@@ -55,7 +65,7 @@ export class Net {
   private url(): string {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const q = new URLSearchParams({ room: this.code, role: this.role, cid: this.clientId });
-    return `${proto}//${location.host}${import.meta.env.BASE_URL}ws?${q}`; // BASE_URL: "/" or "/drift-party/"
+    return `${proto}//${location.host}${appRoot()}ws?${q}`;
   }
 
   private connect(): void {

@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { Net } from "../shared/net";
+import { Net, appRoot } from "../shared/net";
 import { carIcon } from "../shared/carArt";
 import { carLabel } from "../shared/cars";
 import {
@@ -229,7 +229,7 @@ class DriftScreen {
     this.renderUI();
   }
 
-  controllerUrl() { return `${location.origin}${import.meta.env.BASE_URL}controller/?room=${encodeURIComponent(this.room.code)}`; }
+  controllerUrl() { return `${location.origin}${appRoot()}controller/?room=${encodeURIComponent(this.room.code)}`; }
 
   async refreshQR() {
     try { this.qr = await QRCode.toDataURL(this.controllerUrl(), { width: 280, margin: 1, errorCorrectionLevel: "M" }); }
@@ -640,7 +640,7 @@ class DriftScreen {
             <div style="width:150px;height:150px;margin:6px auto 0;display:flex;align-items:center;justify-content:center">${qr}</div>
             <div style="margin-top:6px;font-size:11px;color:#aaa;letter-spacing:1px;font-family:sans-serif">ROOM CODE</div>
             <div style="font-size:36px;font-weight:700;color:#222;letter-spacing:5px;line-height:1.05">${esc(this.room.code)}</div>
-            <div style="font-size:12px;color:#999;font-family:sans-serif">${esc(location.host + import.meta.env.BASE_URL)}controller</div>
+            <div style="font-size:12px;color:#999;font-family:sans-serif">${esc(location.host + appRoot())}controller</div>
             <div style="margin-top:6px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:15px;color:#666">
               <span style="width:9px;height:9px;border-radius:50%;background:${relay[0]};display:inline-block"></span>${relay[1]}</div>
             ${this.relay === "replaced" ? this.btn("newRoom", "Start a new room here", "margin-top:8px;padding:6px 12px;background:#E63946;color:#fff;font-size:15px") : ""}

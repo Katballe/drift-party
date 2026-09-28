@@ -137,7 +137,14 @@ Edits are drafts in that browser's localStorage, layered over
 
 `npm run deploy:dev` deploys the dev build as a separate Worker
 (`drift-party-dev`, its own rooms) so it can be tested with real phones over the
-internet without touching the live game.
+internet without touching the live game:
+- **https://drift-party-dev.mkatballe.workers.dev/screen/** — public, no password;
+- **https://katballe-studio-dev.mkatballe.workers.dev/drift-party/** — the same
+  Worker behind the Katballe Studio dev site's password (it forwards
+  `/drift-party/*` here through a service binding).
+
+The dev build uses relative asset URLs and finds its root path at runtime
+(`appRoot()` in `src/shared/net.ts`), so one build serves both.
 
 Open `/screen/` on a computer and `/controller/?room=CODE` on a phone (or the
 **Test controller ↗** button for a second window — arrow keys work there too).

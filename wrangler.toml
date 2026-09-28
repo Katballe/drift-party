@@ -23,14 +23,14 @@ tag = "v1"
 new_sqlite_classes = ["Room"]
 
 # Dev environment: `npm run deploy:dev` → Worker `drift-party-dev`, played at
-# https://katballe-studio-dev.mkatballe.workers.dev/drift-party/ (the dev site
-# forwards /drift-party/* here through a service binding, behind its password).
-# Same Worker code; the client is the dev build (track editor on) with base
-# /drift-party/. Its own Worker and rooms, so testing never touches the live
-# game. No public workers.dev URL: the dev site is the only way in.
+#   https://drift-party-dev.mkatballe.workers.dev/screen/            (public)
+#   https://katballe-studio-dev.mkatballe.workers.dev/drift-party/   (behind the dev
+#     site's password; it forwards /drift-party/* here via a service binding)
+# Same Worker code; the client is the dev build (track editor on). Its own
+# Worker and rooms, so testing never touches the live game.
 [env.dev]
 name = "drift-party-dev"
-workers_dev = false
+workers_dev = true
 preview_urls = false
 
 [[env.dev.durable_objects.bindings]]

@@ -7,14 +7,16 @@ import { defineConfig } from "vite";
 //   controller/...    → /controller/ (the phone gamepad)
 // Output goes to dist/, which the Worker serves via the [assets] binding.
 //
-// `vite build --mode devtools` (npm run dev) compiles in the track editor and
-// debug overlays; a normal build leaves them out entirely. `--mode studio-dev`
-// (npm run deploy:dev) is the same dev build, served under /drift-party/ on
-// the katballe-studio-dev site.
+// `vite build --mode devtools` (npm run dev / deploy:dev) compiles in the track
+// editor and debug overlays; a normal build leaves them out entirely. The dev
+// build uses relative asset URLs so the same files work at a domain root
+// (drift-party-dev.mkatballe.workers.dev/screen/) and under a path
+// (katballe-studio-dev…/drift-party/screen/); the code finds its root at
+// runtime (appRoot in src/shared/net.ts).
 export default defineConfig(({ mode }) => ({
   appType: "mpa",
-  base: mode === "studio-dev" ? "/drift-party/" : "/",
-  define: { __DEV_TOOLS__: JSON.stringify(mode === "devtools" || mode === "studio-dev") },
+  base: mode === "devtools" ? "./" : "/",
+  define: { __DEV_TOOLS__: JSON.stringify(mode === "devtools") },
   build: {
     outDir: "dist",
     emptyOutDir: true,
