@@ -437,9 +437,9 @@ class DriftScreen {
     }
 
     if (this.phase !== "LOBBY") {
-      this.renderer.frame(race, this.phase === "RACING" ? alpha : 1, this.phase === "RACING" ? dt : 0, this.dev?.raceOverlay(race));
+      this.renderer.frame(race, this.phase === "RACING" ? alpha : 1, this.phase === "RACING" ? dt : 0, __DEV_TOOLS__ ? this.dev?.raceOverlay(race) : undefined);
       if (t - this.lastHudT > 150) { this.lastHudT = t; this.renderUI(); }
-    } else if (this.dev?.editing) this.renderer.frame(null, 1, 0, this.dev.editorOverlay);
+    } else if (__DEV_TOOLS__ && this.dev?.editing) this.renderer.frame(null, 1, 0, this.dev.editorOverlay);
     requestAnimationFrame((tt) => this.loop(tt));
   }
 
@@ -483,7 +483,7 @@ class DriftScreen {
   // ── input ─────────────────────────────────────────────────────────────────
   onKey(e: KeyboardEvent) {
     if ((e.target as HTMLElement)?.tagName === "INPUT") return;
-    if (this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
+    if (__DEV_TOOLS__ && this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
     if (e.repeat) return;
     switch (e.code) {
       case "Enter": case "NumpadEnter":
@@ -533,7 +533,7 @@ class DriftScreen {
       case "fullscreen": this.toggleFullscreen(); break;
       case "newRoom": this.openRoom(true); break;
       case "openController": window.open(this.controllerUrl(), "_blank"); break;
-      case "devOpen": this.dev?.toggle(true); break;
+      case "devOpen": if (__DEV_TOOLS__) this.dev?.toggle(true); break;
     }
     this.renderUI();
   }
@@ -550,9 +550,9 @@ class DriftScreen {
   renderUI() {
     if (!this.els) return;
     const ph = this.phase;
-    const lobby = ph === "LOBBY" && !this.dev?.editing;
+    const lobby = ph === "LOBBY" && !(__DEV_TOOLS__ && this.dev?.editing);
     this.set(this.els.lobby, lobby ? this.lobbyHTML() : "", lobby);
-    this.dev?.render();
+    if (__DEV_TOOLS__) this.dev?.render();
     const showCount = ph === "COUNTDOWN" || ph === "PAUSED" || (ph === "RACING" && this.goT > 0);
     this.set(this.els.countdown, showCount ? this.overlayHTML() : "", showCount);
     this.renderHud();
