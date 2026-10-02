@@ -10,8 +10,8 @@ directory = "./dist"
 binding = "ASSETS"
 html_handling = "auto-trailing-slash"
 not_found_handling = "single-page-application"
-# The realtime endpoint must always reach the Worker, never the SPA fallback.
-run_worker_first = ["/ws"]
+# The realtime and API endpoints must always reach the Worker, never the SPA fallback.
+run_worker_first = ["/ws", "/api/*"]
 
 # Realtime rooms. SQLite-backed Durable Object (required for the Workers Free plan).
 [[durable_objects.bindings]]
@@ -21,6 +21,16 @@ class_name = "Room"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+# Player feedback: one SQLite-backed object, write-only from the internet. Read it
+# in the Cloudflare dashboard → Durable Objects → drift-party_Feedback → Data Studio.
+[[durable_objects.bindings]]
+name = "FEEDBACK"
+class_name = "Feedback"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Feedback"]
 
 # Dev environment: `npm run deploy:dev` → Worker `drift-party-dev`, played at
 #   https://drift-party-dev.mkatballe.workers.dev/screen/            (public)
@@ -40,3 +50,11 @@ class_name = "Room"
 [[env.dev.migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[env.dev.durable_objects.bindings]]
+name = "FEEDBACK"
+class_name = "Feedback"
+
+[[env.dev.migrations]]
+tag = "v2"
+new_sqlite_classes = ["Feedback"]

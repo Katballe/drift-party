@@ -2,6 +2,7 @@ import QRCode from "qrcode";
 import { Net, appRoot } from "../shared/net";
 import { carIcon } from "../shared/carArt";
 import { carLabel } from "../shared/cars";
+import { feedbackOpen, openFeedback } from "../shared/feedback";
 import {
   ALL_SLOTS,
   BOT_IDS,
@@ -482,7 +483,7 @@ class DriftScreen {
 
   // ── input ─────────────────────────────────────────────────────────────────
   onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+    if ((e.target as HTMLElement)?.tagName === "INPUT" || feedbackOpen()) return;
     if (__DEV_TOOLS__ && this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
     if (e.repeat) return;
     switch (e.code) {
@@ -533,6 +534,7 @@ class DriftScreen {
       case "fullscreen": this.toggleFullscreen(); break;
       case "newRoom": this.openRoom(true); break;
       case "openController": window.open(this.controllerUrl(), "_blank"); break;
+      case "feedback": openFeedback("screen"); break;
       case "devOpen": if (__DEV_TOOLS__) this.dev?.toggle(true); break;
     }
     this.renderUI();
@@ -629,6 +631,7 @@ class DriftScreen {
           <div style="font-size:16px;color:#8BC34A;margin-top:2px">Free online party racing — your phone is the controller</div>
         </div>
         <div style="display:flex;gap:8px">
+          ${this.btn("feedback", "💬 Feedback", "padding:9px 14px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);font-size:16px")}
           ${this.btn("fullscreen", document.fullscreenElement ? "⤡ Exit fullscreen" : "⛶ Fullscreen", "padding:9px 14px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);font-size:16px")}
           ${__DEV_TOOLS__ && this.dev ? this.btn("devOpen", "🛠 Track editor (E)", "padding:9px 14px;background:#FFD600;color:#1a2a0a;font-size:16px") : ""}
           ${this.btn("openController", "Test controller ↗", "padding:9px 14px;background:#E63946;color:#fff;font-size:16px")}

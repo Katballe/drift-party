@@ -92,7 +92,8 @@ free tier.
 | `controller/`, `src/controller/main.ts` | Phone gamepad |
 | `src/shared/protocol.ts` | Message protocol + close codes shared by all three |
 | `src/shared/net.ts` | Reconnecting WebSocket client with heartbeat |
-| `src/worker/` | Worker entry + `Room` Durable Object |
+| `src/worker/` | Worker entry + `Room` Durable Object + `Feedback` Durable Object (`feedback.ts`) |
+| `src/shared/feedback.ts` | The 💬 Feedback dialog (big screen and phones) |
 
 The `Room` Durable Object:
 - assigns phones a slot (p1→p8), **sticky per client id** — a phone that
@@ -106,6 +107,31 @@ The `Room` Durable Object:
   room, `4004` replaced by a newer connection;
 - uses the WebSocket Hibernation API with an auto-answered `ping`/`pong`
   heartbeat, prunes dead sockets, and wipes room storage 2 h after it empties.
+
+## Feedback
+
+**💬 Feedback** in the big screen's lobby header, and **💬 Send feedback** on the
+phone's join, lobby and results views, open a short form: the message (up to
+2000 characters) and an optional name or email. It posts to `POST /api/feedback`,
+which saves a row in the `Feedback` Durable Object's SQLite table.
+
+**Only you can read it.** The endpoint is write-only: no route in the Worker
+reads feedback back, so there is nothing on the public internet to leak. Read
+(and delete) it in the Cloudflare dashboard:
+
+1. **Storage & databases → Durable Objects** → the `Feedback` namespace of
+   `drift-party` (or `drift-party-dev` for the dev build's own, separate box).
+2. **Data Studio** → object name **`feedback`** → table `feedback`.
+
+Data Studio needs the Workers Platform Admin role on the account, and Cloudflare
+audit-logs every query it runs.
+
+Each row: `created_at` (UTC), `source` (`screen` / `controller`), `message`,
+`contact`, `country` (from Cloudflare) and `user_agent`. IP addresses are never
+stored. Abuse limits: 5 submissions per sender per 10 minutes (kept in memory
+only), a hidden honeypot field for bots, JSON-only requests (so other websites
+can't post from a visitor's browser), and a cap of 5000 rows (further submissions
+get "the box is full" until you delete some).
 
 ## Develop
 
@@ -175,6 +201,8 @@ Add `?debug` to the screen URL to expose the game as `window.drift`.
 - `npm run typecheck` — `tsc --noEmit`
 - `npm run check` — both of the above
 - `node test/relay.test.mjs` — relay integration test (needs `npm run dev` running)
+- `node test/feedback.test.mjs` — feedback endpoint integration test (needs `npm run dev` running;
+  it uses up the local rate limit, so restart `npm run dev` before running it again within 10 minutes)
 - `npm run deploy` — check + build + `wrangler deploy` (production; what CI runs on push to `main`)
 - `npm run deploy:dev` — check + dev build + `wrangler deploy --env dev` (`drift-party-dev`)
 

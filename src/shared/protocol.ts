@@ -85,6 +85,17 @@ export type AnyMessage = ControllerMessage | ScreenMessage | RelayMessage;
 export const CONTROLLER_TYPES = new Set<string>(["profile", "input"]);
 export const SCREEN_TYPES = new Set<string>(["phase", "status", "results"]);
 
+// ── Feedback (plain HTTP, not the relay) ─────────────────────────────────────
+// POST /api/feedback with a JSON FeedbackBody → 204 saved · 400 invalid ·
+// 429 too many from this sender · 503 the box is full. Write-only: nothing ever
+// serves stored feedback back over HTTP (it's read in the Cloudflare dashboard).
+export type FeedbackSource = "screen" | "controller";
+/** `website` is a honeypot: a hidden field only bots fill in. */
+export interface FeedbackBody { source: FeedbackSource; message: string; contact?: string; website?: string; }
+/** Limits in characters (code points). */
+export const FEEDBACK_MAX = 2000;
+export const FEEDBACK_CONTACT_MAX = 120;
+
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I,O,0,1
 
 /** 6-char room code (no ambiguous chars). */

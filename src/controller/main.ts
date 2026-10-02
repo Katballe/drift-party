@@ -1,5 +1,6 @@
 import { carIcon } from "../shared/carArt";
 import { CARS, carStats, type CarStats } from "../shared/cars";
+import { closeFeedback, feedbackOpen, openFeedback } from "../shared/feedback";
 import { Net } from "../shared/net";
 import {
   CAR_TYPES,
@@ -51,6 +52,7 @@ const KEYS: Record<string, Btn> = {
   ArrowLeft: "left", KeyA: "left", ArrowRight: "right", KeyD: "right",
   ArrowUp: "throttle", KeyW: "throttle", ArrowDown: "brake", KeyS: "brake", Space: "brake",
 };
+const FEEDBACK_BTN = `<button type="button" data-action="feedback" style="background:none;border:none;color:#9a937c;font-family:'Caveat',cursive;font-size:18px;text-decoration:underline dotted;cursor:pointer">💬 Send feedback</button>`;
 const STAT_LABELS: [keyof CarStats, string][] = [["speed", "Top speed"], ["accel", "Acceleration"], ["handling", "Handling"], ["weight", "Weight"], ["offroad", "Off-road"]];
 
 function clientId(): string {
@@ -272,7 +274,7 @@ class DriftController {
 
   bindKeys() {
     const on = (e: KeyboardEvent, down: boolean) => {
-      if ((e.target as HTMLElement)?.tagName === "INPUT" || !KEYS[e.code]) return;
+      if ((e.target as HTMLElement)?.tagName === "INPUT" || feedbackOpen() || !KEYS[e.code]) return;
       if (this.racing) e.preventDefault();
       if (down) this.keys.add(e.code); else this.keys.delete(e.code);
       this.recompute();
@@ -340,7 +342,7 @@ class DriftController {
     const coarse = window.matchMedia?.("(pointer: coarse)").matches ?? false;
     // While typing, the on-screen keyboard shrinks the viewport and could make a
     // portrait phone look sideways — keep the last answer until it closes.
-    if (coarse && document.activeElement?.tagName === "INPUT") return;
+    if (coarse && ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName ?? "")) return;
     const p = coarse && window.innerHeight > window.innerWidth;
     if (p === this.portrait && coarse === this.touch) return;
     this.portrait = p;
@@ -354,6 +356,7 @@ class DriftController {
     if (!el) return;
     switch (el.dataset.action) {
       case "leave": this.leave(); break;
+      case "feedback": openFeedback("controller"); break;
       case "car":
         this.carType = el.dataset.car as CarType;
         ls.set("driftparty.car", this.carType);
@@ -407,7 +410,7 @@ class DriftController {
       this.root.innerHTML = v === "race" ? (this.portrait ? this.portraitHTML() : this.raceHTML())
         : v === "lobby" ? this.lobbyHTML() : v === "spectate" ? this.spectateHTML() : v === "finished" ? this.finishedHTML()
         : v === "results" ? this.resultsHTML() : this.joinHTML();
-      if (v === "race") this.startKeepalive(); else clearInterval(this.keepalive);
+      if (v === "race") { this.startKeepalive(); closeFeedback(); } else clearInterval(this.keepalive);
       if (prevFocus) (document.getElementById(prevFocus) as HTMLInputElement | null)?.focus();
     }
     this.patch();
@@ -486,6 +489,7 @@ class DriftController {
         </div>
         <div style="margin-top:10px;font-size:15px;color:${this.error ? "#E63946" : "#999"};line-height:1.35;min-height:20px">${esc(this.error || (busy ? "Connecting…" : "Tip: scanning the QR code on the big screen fills this in."))}</div>
       </div>
+      ${FEEDBACK_BTN}
     </form>`;
   }
 
@@ -540,6 +544,7 @@ class DriftController {
       <button data-action="ready" style="width:100%;max-width:520px;padding:14px;background:${this.ready ? "#2E7D32" : "#E63946"};color:#fff;border:none;border-radius:14px;font-size:28px;font-weight:700;font-family:'Caveat',cursive;cursor:pointer;box-shadow:0 4px 0 ${this.ready ? "#1B5E20" : "#B71C1C"}">
         ${this.ready ? "✓ Ready! Waiting for the host…" : "Ready up"}</button>
       <div style="font-size:14px;color:#9a937c;text-align:center;line-height:1.35">Left thumb steers · right thumb GAS / BRAKE · brake + steer = drift<br>⚡ pads boost · tuck in behind a car to slipstream</div>
+      ${FEEDBACK_BTN}
     </div>`;
   }
 
@@ -602,6 +607,7 @@ class DriftController {
       <div id="res-cup" style="font-size:21px;color:#2E7D32;font-weight:700"></div>
       <div style="font-size:16px;color:#aaa;line-height:1.4">Full results are on the big screen.<br>Waiting for the host…</div>
       <div id="orient" style="width:100%;max-width:440px;display:none;margin-top:6px"></div>
+      ${FEEDBACK_BTN}
     </div>`;
   }
 }

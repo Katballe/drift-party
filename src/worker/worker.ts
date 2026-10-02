@@ -1,9 +1,11 @@
+import { Feedback, handleFeedback } from "./feedback";
 import { Room } from "./room";
 
-export { Room };
+export { Feedback, Room };
 
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
+  FEEDBACK: DurableObjectNamespace<Feedback>;
   ASSETS: Fetcher;
 }
 
@@ -20,6 +22,9 @@ export default {
       const id = env.ROOM.idFromName(code);
       return env.ROOM.get(id).fetch(request);
     }
+
+    if (url.pathname === "/api/feedback") return handleFeedback(request, env);
+    if (url.pathname.startsWith("/api/")) return new Response("Not found", { status: 404 });
 
     // Everything else is a static asset (/screen/, /controller/, JS, fonts).
     return env.ASSETS.fetch(request);
