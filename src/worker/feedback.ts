@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { FEEDBACK_CONTACT_MAX, FEEDBACK_MAX, type FeedbackBody, type FeedbackSource } from "../shared/protocol";
+import { FEEDBACK_CONTACT_MAX, FEEDBACK_MAX, FEEDBACK_SOURCES, type FeedbackBody, type FeedbackSource } from "../shared/protocol";
 import type { Env } from "./worker";
 
 export interface FeedbackRow {
@@ -84,7 +84,8 @@ export async function handleFeedback(request: Request, env: Env): Promise<Respon
   let body: Partial<FeedbackBody>;
   try { body = JSON.parse(raw); } catch { return reply(400, "Bad JSON"); }
   if (!body || typeof body !== "object") return reply(400, "Bad JSON");
-  if (body.source !== "screen" && body.source !== "controller") return reply(400, "Bad source");
+  const source = body.source as FeedbackSource;
+  if (!FEEDBACK_SOURCES.includes(source)) return reply(400, "Bad source");
   const message = clean(body.message, FEEDBACK_MAX), contact = clean(body.contact, FEEDBACK_CONTACT_MAX);
   if (message === null || contact === null) return reply(400, "Too long");
   if (!message) return reply(400, "Empty message");
@@ -92,7 +93,7 @@ export async function handleFeedback(request: Request, env: Env): Promise<Respon
 
   const cf = request.cf as IncomingRequestCfProperties | undefined;
   const row: FeedbackRow = {
-    source: body.source, message, contact,
+    source, message, contact,
     country: typeof cf?.country === "string" ? cf.country : "",
     userAgent: (request.headers.get("User-Agent") ?? "").slice(0, 300),
   };

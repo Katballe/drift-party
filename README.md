@@ -81,7 +81,7 @@ free tier.
 
 | Path | What |
 |---|---|
-| `index.html` | Landing page (host / join) |
+| `index.html`, `src/home/main.ts` | Landing page (host / join, 💬 feedback) |
 | `screen/`, `src/screen/main.ts` | Host page: lobby, HUD, results, keyboard, networking |
 | `src/screen/tracks.ts` | Track definitions: spline centerlines + widths → walls, gates, grid, pads, surfaces, scenery; applies track edits |
 | `src/screen/track-edits.json` | Shipped track tuning (grip, walls, bumps, checkpoints…) — export from the track editor |
@@ -110,8 +110,9 @@ The `Room` Durable Object:
 
 ## Feedback
 
-**💬 Feedback** in the big screen's lobby header, and **💬 Send feedback** on the
-phone's join, lobby and results views, open a short form: the message (up to
+**💬 Send feedback** on the front page, **💬 Feedback** in the big screen's lobby
+header (after **Host**), and **💬 Send feedback** on the phone's join, lobby and
+results views (after **Join**) open a short form: the message (up to
 2000 characters) and an optional name or email. It posts to `POST /api/feedback`,
 which saves a row in the `Feedback` Durable Object's SQLite table.
 
@@ -126,7 +127,7 @@ reads feedback back, so there is nothing on the public internet to leak. Read
 Data Studio needs the Workers Platform Admin role on the account, and Cloudflare
 audit-logs every query it runs.
 
-Each row: `created_at` (UTC), `source` (`screen` / `controller`), `message`,
+Each row: `created_at` (UTC), `source` (`home` / `screen` / `controller`), `message`,
 `contact`, `country` (from Cloudflare) and `user_agent`. IP addresses are never
 stored. Abuse limits: 5 submissions per sender per 10 minutes (kept in memory
 only), a hidden honeypot field for bots, JSON-only requests (so other websites

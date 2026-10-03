@@ -2,7 +2,7 @@ import { appRoot } from "./net";
 import { FEEDBACK_CONTACT_MAX, FEEDBACK_MAX, type FeedbackBody, type FeedbackSource } from "./protocol";
 
 /**
- * The "💬 Feedback" form, shared by the big screen and the phones. It's a modal
+ * The "💬 Feedback" form, shared by the front page, the big screen and the phones. It's a modal
  * <dialog> on <body>, outside the pages' re-rendered views, so a phone joining
  * or the view changing never wipes what someone is typing; closing it keeps the
  * draft, and only a successful send clears it.
@@ -19,7 +19,8 @@ const CSS = `
 #fb h2 { font-size: 36px; line-height: 1; }
 #fb p { font-size: 19px; color: #6b6450; line-height: 1.2; }
 #fb textarea, #fb input { width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 10px; background: #fff; color: #222;
-  font: 16px/1.4 system-ui, sans-serif; outline: none; -webkit-user-select: text; user-select: text; }
+  font: 16px/1.4 system-ui, sans-serif; letter-spacing: normal; text-align: left; text-transform: none; outline: none;
+  -webkit-user-select: text; user-select: text; }
 #fb textarea { min-height: 130px; resize: vertical; }
 #fb textarea:focus, #fb input:focus { border-color: #1a2a0a; }
 #fb .fb-trap { position: absolute; left: -10000px; width: 1px; height: 1px; opacity: 0; }

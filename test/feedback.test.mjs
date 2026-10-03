@@ -13,7 +13,7 @@ const good = { source: "controller", message: "Snake Canyon is great — more oi
 
 console.log("Feedback test");
 ok(await post(good) === 204, "valid feedback is saved (204)");
-ok(await post({ source: "screen", message: "  ok  " }) === 204, "contact is optional");
+ok(await post({ source: "home", message: "  ok  " }) === 204, "contact is optional; the front page is a valid source");
 ok(await post({ ...good, message: "   " }) === 400, "an empty message is refused");
 ok(await post({ ...good, message: "x".repeat(2001) }) === 400, "a message over 2000 characters is refused");
 ok(await post({ ...good, message: "🏁".repeat(2000) }) === 204, "2000 emoji fit (limits count characters, not UTF-16 units)");

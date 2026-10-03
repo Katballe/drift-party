@@ -89,7 +89,8 @@ export const SCREEN_TYPES = new Set<string>(["phase", "status", "results"]);
 // POST /api/feedback with a JSON FeedbackBody → 204 saved · 400 invalid ·
 // 429 too many from this sender · 503 the box is full. Write-only: nothing ever
 // serves stored feedback back over HTTP (it's read in the Cloudflare dashboard).
-export type FeedbackSource = "screen" | "controller";
+export const FEEDBACK_SOURCES = ["home", "screen", "controller"] as const; // front page · big screen · phone
+export type FeedbackSource = (typeof FEEDBACK_SOURCES)[number];
 /** `website` is a honeypot: a hidden field only bots fill in. */
 export interface FeedbackBody { source: FeedbackSource; message: string; contact?: string; website?: string; }
 /** Limits in characters (code points). */
