@@ -555,6 +555,7 @@ class DriftScreen {
     const lobby = ph === "LOBBY" && !(__DEV_TOOLS__ && this.dev?.editing);
     this.set(this.els.lobby, lobby ? this.lobbyHTML() : "", lobby);
     if (__DEV_TOOLS__) this.dev?.render();
+    document.getElementById("root")!.dataset.race = String(this.inRace);
     const showCount = ph === "COUNTDOWN" || ph === "PAUSED" || (ph === "RACING" && this.goT > 0);
     this.set(this.els.countdown, showCount ? this.overlayHTML() : "", showCount);
     this.renderHud();
@@ -568,7 +569,7 @@ class DriftScreen {
   lobbyHTML() {
     const s = this.settings, joined = this.joined(), unready = this.unready(), bots = this.bots.length;
     const cup = s.mode === "cup", full = joined.length + bots >= MAX_RACERS;
-    const icon = (t: CarType, col: string) => `<img src="${carIcon(t, col, 72)}" alt="" style="width:54px;height:32px;flex-shrink:0;display:block" />`;
+    const icon = (t: CarType, col: string) => `<img class="lb-seat-car" src="${carIcon(t, col, 72)}" alt="" style="width:54px;height:32px;flex-shrink:0" />`;
     const small = "border:2px solid #ddd;background:#fff;color:#444;border-radius:9px;font-size:17px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;padding:3px 10px";
     const seats = this.seats().map((seat, i) => {
       const col = PLAYER_COLORS[ALL_SLOTS[i]];
@@ -595,8 +596,8 @@ class DriftScreen {
          <button data-action="removeBot" data-bot="${b.id}" title="Remove bot" aria-label="Remove ${esc(b.name)}" style="position:absolute;top:1px;right:5px;border:none;background:none;color:#b8b196;font-size:18px;line-height:1;cursor:pointer;padding:0 2px">×</button>`);
     }).join("");
     const who = `${joined.length} phone${joined.length === 1 ? "" : "s"}${bots ? ` + ${bots} bot${bots === 1 ? "" : "s"}` : ""} · up to ${MAX_RACERS}`;
-    const botCtl = `<div style="display:flex;align-items:center;gap:6px">
-        <span style="font-size:18px;color:#888;margin-right:2px">🤖 Bots</span>
+    const botCtl = `<div class="lb-row" style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:18px;color:#888;margin-right:2px;white-space:nowrap">🤖 Bots</span>
         ${(Object.keys(BOT_SKILL_LABELS) as BotSkill[]).map((k) => `<button data-action="botSkill" data-skill="${k}" title="Bot skill" style="${small};${s.botSkill === k ? "background:#1a2a0a;border-color:#1a2a0a;color:#fff" : ""}">${BOT_SKILL_LABELS[k]}</button>`).join("")}
         <span style="width:6px"></span>
         <button data-action="removeBot" ${bots ? "" : "disabled"} title="Remove a bot" style="${small};${bots ? "" : "opacity:.4;cursor:default"}">−</button>
@@ -614,7 +615,7 @@ class DriftScreen {
     }).join("");
     const tag = cup ? `All five tracks in a row — ${POINTS.join(" / ")} points per race. Most points wins the cup!` : TRACKS[s.track].tag;
     const seg = (action: string, key: string, val: string | number, label: string, on: boolean) =>
-      `<button data-action="${action}" data-${key}="${val}" style="padding:7px 14px;border:2px solid ${on ? "#E63946" : "#ddd"};background:${on ? "#E63946" : "#fff"};color:${on ? "#fff" : "#444"};border-radius:9px;font-size:19px;font-weight:700;font-family:Caveat,cursive;cursor:pointer">${label}</button>`;
+      `<button data-action="${action}" data-${key}="${val}" style="padding:7px 14px;border:2px solid ${on ? "#E63946" : "#ddd"};background:${on ? "#E63946" : "#fff"};color:${on ? "#fff" : "#444"};border-radius:9px;font-size:19px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;white-space:nowrap">${label}</button>`;
     const relay = this.relay === "online" ? ["#4CAF50", "Online — phones can join"]
       : this.relay === "replaced" ? ["#E63946", "Open in another tab"] : ["#FFB300", "Connecting to server…"];
     const qr = this.qr ? `<img src="${this.qr}" alt="QR code to join" style="width:150px;height:150px;image-rendering:pixelated" />` : `<div style="color:#999;font-size:13px">…</div>`;
@@ -624,60 +625,65 @@ class DriftScreen {
     else if (!joined.length) startLabel = cup ? "WATCH A BOT CUP ▶" : "WATCH THE BOTS ▶";
     const startStyle = enabled ? "background:#FFD600;color:#1a2a0a;box-shadow:0 4px 0 #b8920a" : "background:#cfc7a8;color:#6b6450;box-shadow:0 4px 0 #a39c80;cursor:default";
 
-    return `<div style="position:absolute;inset:0;background:#f0ede4;display:flex;flex-direction:column;z-index:10">
-      <div style="background:#1a2a0a;padding:10px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-shrink:0">
+    // Layout that changes with the screen size is in classes (screen/index.html):
+    // phones and tablets stack the lobby and scroll it, with START pinned at the bottom.
+    const hbtn = 'class="lb-hbtn"';
+    return `<div class="lb" style="position:absolute;inset:0;background:#f0ede4;display:flex;flex-direction:column;z-index:10">
+      <div class="lb-head" style="background:#1a2a0a;display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-shrink:0">
         <div>
-          <div style="font-size:42px;font-weight:700;color:#FFD600;line-height:1">DRIFT PARTY</div>
-          <div style="font-size:16px;color:#8BC34A;margin-top:2px">Free online party racing — your phone is the controller</div>
+          <div class="lb-title" style="font-weight:700;color:#FFD600;line-height:1">DRIFT PARTY</div>
+          <div class="lb-tagline" style="color:#8BC34A;margin-top:2px">Free online party racing — your phone is the controller</div>
         </div>
-        <div style="display:flex;gap:8px">
-          ${this.btn("feedback", "💬 Feedback", "padding:9px 14px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);font-size:16px")}
-          ${this.btn("fullscreen", document.fullscreenElement ? "⤡ Exit fullscreen" : "⛶ Fullscreen", "padding:9px 14px;background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2);font-size:16px")}
-          ${__DEV_TOOLS__ && this.dev ? this.btn("devOpen", "🛠 Track editor (E)", "padding:9px 14px;background:#FFD600;color:#1a2a0a;font-size:16px") : ""}
-          ${this.btn("openController", "Test controller ↗", "padding:9px 14px;background:#E63946;color:#fff;font-size:16px")}
+        <div class="lb-row" style="display:flex;gap:8px">
+          ${this.btn("feedback", "💬 Feedback", "background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2)", hbtn)}
+          ${this.btn("fullscreen", document.fullscreenElement ? "⤡ Exit fullscreen" : "⛶ Fullscreen", "background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2)", hbtn)}
+          ${__DEV_TOOLS__ && this.dev ? this.btn("devOpen", "🛠 Track editor (E)", "background:#FFD600;color:#1a2a0a", hbtn) : ""}
+          ${this.btn("openController", "Test controller ↗", "background:#E63946;color:#fff", hbtn)}
         </div>
       </div>
-      <div style="flex:1;display:flex;gap:20px;padding:16px 24px;min-height:0">
-        <div style="width:230px;flex-shrink:0;display:flex;flex-direction:column;gap:12px">
-          <div style="background:#fff;border-radius:14px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);text-align:center">
-            <div style="font-size:19px;font-weight:700;color:#333">Join with your phone</div>
-            <div style="width:150px;height:150px;margin:6px auto 0;display:flex;align-items:center;justify-content:center">${qr}</div>
-            <div style="margin-top:6px;font-size:11px;color:#aaa;letter-spacing:1px;font-family:sans-serif">ROOM CODE</div>
-            <div style="font-size:36px;font-weight:700;color:#222;letter-spacing:5px;line-height:1.05">${esc(this.room.code)}</div>
-            <div style="font-size:12px;color:#999;font-family:sans-serif">${esc(location.host + appRoot())}controller</div>
-            <div style="margin-top:6px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:15px;color:#666">
-              <span style="width:9px;height:9px;border-radius:50%;background:${relay[0]};display:inline-block"></span>${relay[1]}</div>
-            ${this.relay === "replaced" ? this.btn("newRoom", "Start a new room here", "margin-top:8px;padding:6px 12px;background:#E63946;color:#fff;font-size:15px") : ""}
+      <div class="lb-body">
+        <div class="lb-side" style="display:flex;flex-direction:column;gap:12px">
+          <div class="lb-qr" style="background:#fff;border-radius:14px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06)">
+            <div class="lb-qr-title" style="font-size:19px;font-weight:700;color:#333">Join with your phone</div>
+            <div class="lb-qr-img" style="display:flex;align-items:center;justify-content:center">${qr}</div>
+            <div class="lb-qr-info">
+              <div style="margin-top:6px;font-size:11px;color:#aaa;letter-spacing:1px;font-family:sans-serif">ROOM CODE</div>
+              <div class="lb-code" style="font-weight:700;color:#222;line-height:1.05">${esc(this.room.code)}</div>
+              <div style="font-size:12px;color:#999;font-family:sans-serif;overflow-wrap:anywhere">${esc(location.host + appRoot())}controller</div>
+              <div class="lb-qr-status" style="margin-top:6px;display:flex;align-items:center;gap:6px;font-size:15px;color:#666">
+                <span style="width:9px;height:9px;border-radius:50%;background:${relay[0]};display:inline-block;flex-shrink:0"></span>${relay[1]}</div>
+              ${this.relay === "replaced" ? this.btn("newRoom", "Start a new room here", "margin-top:8px;padding:6px 12px;background:#E63946;color:#fff;font-size:15px") : ""}
+            </div>
           </div>
         </div>
         <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:14px">
           <div>
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
+            <div class="lb-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
               <div style="font-size:22px;font-weight:700;color:#333;white-space:nowrap">Racers <span style="font-size:16px;color:#999;font-weight:400">· ${who}</span></div>
               ${botCtl}
             </div>
-            <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px">${seats}</div>
+            <div class="lb-seats" style="display:grid;gap:8px">${seats}</div>
           </div>
           <div style="flex:1;min-height:0">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
+            <div class="lb-row" style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px">
               <div style="font-size:22px;font-weight:700;color:#333">${cup ? "🏆 Cup — all tracks" : "Track"}</div>
-              <div style="display:flex;align-items:center;gap:6px">
-                ${seg("setMode", "mode", "single", "Single race", !cup)}${seg("setMode", "mode", "cup", "🏆 Cup (5 races)", cup)}
-                <span style="width:14px"></span><span style="font-size:18px;color:#888">Laps</span>
-                ${LAP_OPTIONS.map((n) => seg("setLaps", "laps", n, String(n), s.laps === n)).join("")}
+              <div class="lb-row" style="display:flex;align-items:center;column-gap:20px">
+                <div style="display:flex;gap:6px">${seg("setMode", "mode", "single", "Single race", !cup)}${seg("setMode", "mode", "cup", "🏆 Cup (5 races)", cup)}</div>
+                <div style="display:flex;align-items:center;gap:6px"><span style="font-size:18px;color:#888">Laps</span>
+                  ${LAP_OPTIONS.map((n) => seg("setLaps", "laps", n, String(n), s.laps === n)).join("")}</div>
               </div>
             </div>
-            <div style="display:flex;gap:10px">${tracks}</div>
+            <div class="lb-tracks">${tracks}</div>
             <div style="margin-top:8px;font-size:20px;color:#6b6450">${esc(tag)}</div>
           </div>
         </div>
       </div>
-      <div style="background:#1a2a0a;padding:10px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0">
-        <div style="font-size:16px;color:rgba(255,255,255,0.55);line-height:1.35">Phones: left thumb steers · right thumb GAS / BRAKE · brake + steer = drift<br>
+      <div class="lb-foot" style="background:#1a2a0a;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-shrink:0">
+        <div class="lb-tips" style="font-size:16px;color:rgba(255,255,255,0.55);line-height:1.35">Phones: left thumb steers · right thumb GAS / BRAKE · brake + steer = drift<br>
           <span style="color:rgba(255,255,255,0.35)">Boost pads ⚡ · tuck in behind someone for a slipstream · Enter start · Esc pause · F fullscreen</span></div>
-        <div style="display:flex;align-items:center;gap:12px;flex-shrink:0">
+        <div class="lb-go" style="display:flex;align-items:center;gap:12px;flex-shrink:0">
           ${joined.length && unready.length ? this.btn("startAnyway", "Start anyway", "padding:6px 10px;background:none;color:rgba(255,255,255,0.6);border:1px solid rgba(255,255,255,0.25);font-size:15px") : ""}
-          <button data-action="start" style="padding:12px 30px;border:none;border-radius:11px;font-size:24px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;${startStyle}">${startLabel}</button>
+          <button data-action="start" class="lb-start" style="border:none;border-radius:11px;font-weight:700;font-family:Caveat,cursive;cursor:pointer;${startStyle}">${startLabel}</button>
         </div>
       </div>
     </div>`;
@@ -685,9 +691,9 @@ class DriftScreen {
 
   overlayHTML() {
     if (this.phase === "PAUSED") {
-      return `<div style="position:absolute;inset:0;background:rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:30">
+      return `<div style="position:absolute;inset:0;background:rgba(0,0,0,0.6);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;z-index:30;padding:16px;text-align:center">
         <div style="font-size:96px;font-weight:700;color:#FFD600;line-height:1">PAUSED</div>
-        <div style="display:flex;gap:12px">
+        <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:12px">
           ${this.btn("resume", "Resume ▶", "padding:12px 34px;background:#FFD600;color:#1a2a0a;font-size:24px;box-shadow:0 4px 0 #b8920a")}
           ${this.btn("quit", "Quit to lobby", "padding:12px 26px;background:#666;color:#fff;font-size:22px;box-shadow:0 4px 0 #444")}
         </div>
@@ -699,7 +705,7 @@ class DriftScreen {
     const col = go ? "#4CAF50" : "#FFD600";
     const t = TRACKS[this.trackId];
     const sub = this.cup ? `Race ${this.cup.index + 1} of ${this.cup.tracks.length} · ${t.name} · ${this.race?.laps} laps` : `${t.name} · ${this.race?.laps} laps`;
-    return `<div style="position:absolute;inset:0;background:${go ? "transparent" : "rgba(0,0,0,0.45)"};display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:20;pointer-events:none">
+    return `<div style="position:absolute;inset:0;background:${go ? "transparent" : "rgba(0,0,0,0.45)"};display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:20;pointer-events:none;padding:0 16px;text-align:center">
       <div style="font-size:210px;font-weight:700;color:${col};text-shadow:0 0 60px ${col}, 0 6px 0 rgba(0,0,0,0.4);line-height:1;animation:popIn 0.45s ease">${v}</div>
       ${go ? "" : `<div style="font-size:30px;color:#fff;margin-top:8px">${esc(sub)}</div><div style="font-size:22px;color:rgba(255,255,255,0.65)">${esc(t.tag)}</div>`}
     </div>`;
@@ -794,7 +800,7 @@ class DriftScreen {
         <div style="font-size:48px;font-weight:700;color:#1a2a0a;text-align:center;line-height:1">${title}</div>
         <div style="font-size:17px;color:#999;text-align:center;margin:6px 0 18px">${esc(t.name)} · ${this.race?.laps} laps</div>
         ${rows}${standings}
-        <div style="display:flex;gap:11px;margin-top:18px;justify-content:center">${buttons}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:11px;margin-top:18px;justify-content:center">${buttons}</div>
       </div>
     </div>`;
   }

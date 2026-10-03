@@ -12,6 +12,8 @@ network (Wi-Fi, cellular, different houses).
 ## Playing
 
 - Open `/` and pick **Start a game** on a TV/laptop, or go straight to `/screen/`.
+  It works on a tablet or phone too: the lobby stacks and scrolls with START pinned
+  at the bottom, and an upright phone is asked to turn sideways for the race.
 - Phones scan the QR code (or open `/controller/` and type the code), pick one
   of seven cars, and tap **Ready up** (which also goes fullscreen/landscape where
   supported). The phone lobby tells you to turn the phone sideways before the race.

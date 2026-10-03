@@ -19,10 +19,79 @@
     button:hover { filter: brightness(1.08); }
     button:active { filter: brightness(0.9); }
     button:focus-visible { outline: 3px solid #FFD600; outline-offset: 2px; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    /* dvh: the visible height on phones, so the browser's toolbar never covers the bottom. */
+    #root { height: 100vh; height: 100dvh; }
+
+    /* A race is 16:9, so on an upright phone it's a thin strip: suggest turning it. */
+    #rotateHint { display: none; position: absolute; top: max(16px, env(safe-area-inset-top)); left: 16px; right: 16px; z-index: 5;
+      text-align: center; font-size: 22px; font-weight: 700; color: rgba(255,255,255,0.75); pointer-events: none; }
+    @media (orientation: portrait) and (pointer: coarse) { #root[data-race="true"] #rotateHint { display: block; } }
+
+    /* Lobby. Built with inline styles in main.ts; only what changes with the screen
+       size lives here. Big screens (TV, laptop): one fixed screen, nothing scrolls. */
+    .lb-head { padding: 10px 24px; }
+    .lb-title { font-size: 42px; }
+    .lb-tagline { font-size: 16px; }
+    .lb-hbtn { padding: 9px 14px; font-size: 16px; }
+    .lb-row { flex-wrap: wrap; row-gap: 6px; }
+    .lb-body { flex: 1; min-height: 0; display: flex; gap: 20px; padding: 16px 24px; }
+    .lb-side { width: 230px; flex-shrink: 0; }
+    .lb-qr { text-align: center; }
+    .lb-qr-img { width: 150px; height: 150px; margin: 6px auto 0; }
+    .lb-qr-status { justify-content: center; }
+    .lb-code { font-size: 36px; letter-spacing: 5px; }
+    .lb-seat-car { display: block; }
+    .lb-seats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .lb-tracks { display: flex; gap: 10px; }
+    .lb-foot { padding: 10px 24px; }
+    .lb-start { padding: 12px 30px; font-size: 24px; }
+
+    /* Not enough room for one fixed screen: the lobby scrolls, START stays pinned. */
+    @media (max-width: 900px), (max-height: 560px) {
+      .lb { overflow-y: auto; overscroll-behavior: contain; }
+      .lb-body { flex: 1 0 auto; min-height: auto; }
+      .lb-foot { position: sticky; bottom: 0; z-index: 2; }
+    }
+    /* Phones held sideways: a slimmer header leaves room for the lobby. */
+    @media (max-height: 560px) {
+      .lb-head { padding: 6px 20px; }
+      .lb-title { font-size: 30px; }
+      .lb-tagline { font-size: 14px; }
+    }
+    /* Tablets and phones: stack the join card above the racers, QR beside the code. */
+    @media (max-width: 900px) {
+      .lb-body { flex-direction: column; gap: 14px; padding: 14px 20px; }
+      .lb-side { width: auto; }
+      .lb-qr { display: grid; grid-template-columns: auto 1fr; grid-template-areas: "img title" "img info"; column-gap: 16px; text-align: left; }
+      .lb-qr-title { grid-area: title; align-self: end; }
+      .lb-qr-img { grid-area: img; margin: 0; }
+      .lb-qr-info { grid-area: info; align-self: start; min-width: 0; }
+      .lb-qr-status { justify-content: flex-start; }
+      .lb-tracks { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+      .lb-foot { padding: 10px 20px; }
+      .lb-tagline { font-size: 14px; }
+      .lb-hbtn { padding: 7px 12px; font-size: 15px; }
+    }
+    /* Phones */
+    @media (max-width: 640px) {
+      .lb-head { padding: 10px 16px; flex-wrap: wrap; }
+      .lb-title { font-size: 32px; }
+      .lb-tagline { font-size: 14px; }
+      .lb-hbtn { padding: 6px 10px; font-size: 15px; }
+      .lb-body { padding: 12px 16px; }
+      .lb-seats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .lb-seat-car { display: none; } /* the car's name is already under the racer's */
+      .lb-code { font-size: 30px; letter-spacing: 3px; }
+      .lb-tips { display: none; }
+      .lb-foot { padding: 10px 16px; }
+      .lb-go { flex: 1; }
+      .lb-start { flex: 1; padding: 12px 14px; font-size: 22px; }
+    }
   </style>
 </head>
 <body>
-  <div id="root" style="width:100vw;height:100vh;background:#1a2a0a;position:relative;overflow:hidden;font-family:'Caveat',cursive">
+  <div id="root" style="width:100vw;background:#1a2a0a;position:relative;overflow:hidden;font-family:'Caveat',cursive">
     <!-- #stage is sized to the letterboxed 16:9 canvas; the HUD lives inside it. -->
     <div id="stage" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">
       <canvas id="raceCanvas" style="display:block"></canvas>
@@ -31,6 +100,7 @@
     <div id="lobby"></div>
     <div id="countdown"></div>
     <div id="results"></div>
+    <div id="rotateHint">⟳ Turn your phone sideways for a bigger race</div>
   </div>
   <script type="module" src="/src/screen/main.ts"></script>
 </body>
