@@ -28,8 +28,12 @@
     form { display: flex; gap: 8px; }
     input { flex: 1; min-width: 0; padding: 10px 12px; border: 2px solid #ddd; border-radius: 10px; font: 700 26px 'Caveat', cursive; letter-spacing: 4px; text-align: center; text-transform: uppercase; background: #fff; color: #333; }
     .how { margin-top: 26px; font-size: 20px; color: rgba(240,237,228,0.6); line-height: 1.4; }
-    .feedback { margin-top: 18px; padding: 8px 18px; background: rgba(255,255,255,0.1); color: #f0ede4; border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; font: 700 22px 'Caveat', cursive; cursor: pointer; }
-    .feedback:hover { background: rgba(255,255,255,0.16); }
+    /* Under both cards on a wide screen; under "Join with a phone" once they stack. */
+    .feedback-card { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 14px 20px; }
+    .feedback-card > div { flex: 1 1 260px; }
+    .feedback-card p { margin-bottom: 0; }
+    .feedback { flex: 0 1 240px; background: #1a2a0a; color: #f0ede4; box-shadow: 0 4px 0 #000; }
+    @media (max-width: 560px) { .feedback { flex-basis: 100%; } }
   </style>
 </head>
 <body>
@@ -50,9 +54,15 @@
           <button class="btn join" type="submit">Join</button>
         </form>
       </div>
+      <div class="card feedback-card">
+        <div>
+          <h2>💬 Leave feedback</h2>
+          <p>Found a bug, got an idea, love a track? It goes straight to the developer.</p>
+        </div>
+        <button id="feedback" class="btn feedback" type="button">Leave feedback ▶</button>
+      </div>
     </div>
     <div class="how">No app, no sign-up. Steer with the left thumb, gas and brake with the right —<br>brake while steering to drift. Seven cars, five tracks.</div>
-    <button id="feedback" class="feedback" type="button">💬 Send feedback</button>
   </main>
   <script type="module" src="/src/home/main.ts"></script>
 </body>

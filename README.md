@@ -112,7 +112,7 @@ The `Room` Durable Object:
 
 ## Feedback
 
-**💬 Send feedback** on the front page, **💬 Feedback** in the big screen's lobby
+**💬 Leave feedback** on the front page (under *Join with a phone*), **💬 Feedback** in the big screen's lobby
 header (after **Host**), and **💬 Send feedback** on the phone's join, lobby and
 results views (after **Join**) open a short form: the message (up to
 2000 characters) and an optional name or email. It posts to `POST /api/feedback`,
