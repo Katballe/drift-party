@@ -1,11 +1,15 @@
+import { Maps, handleAdmin } from "./admin";
 import { Feedback, handleFeedback } from "./feedback";
 import { Room } from "./room";
 
-export { Feedback, Room };
+export { Feedback, Maps, Room };
 
 export interface Env {
   ROOM: DurableObjectNamespace<Room>;
   FEEDBACK: DurableObjectNamespace<Feedback>;
+  MAPS: DurableObjectNamespace<Maps>;
+  /** Worker secret: the admin password (map editor + publishing). Unset = no admin login. */
+  ADMIN_PASSWORD?: string;
   ASSETS: Fetcher;
 }
 
@@ -24,6 +28,10 @@ export default {
     }
 
     if (url.pathname === "/api/feedback") return handleFeedback(request, env);
+    if (url.pathname === "/api/maps" || url.pathname.startsWith("/api/admin/")) {
+      const res = await handleAdmin(request, env, url);
+      if (res) return res;
+    }
     if (url.pathname.startsWith("/api/")) return new Response("Not found", { status: 404 });
 
     // Everything else is a static asset (/screen/, /controller/, JS, fonts).

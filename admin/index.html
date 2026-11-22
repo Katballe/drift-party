@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin — Drift Party</title>
+  <meta name="robots" content="noindex" />
+  <meta name="theme-color" content="#1a2a0a" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏁</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; min-height: 100dvh; background: #1a2a0a; color: #f0ede4; font-family: 'Caveat', cursive; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+    main { width: 100%; max-width: 440px; }
+    h1 { font-size: clamp(48px, 12vw, 72px); color: #FFD600; line-height: 1; text-align: center; }
+    h1 a { color: inherit; text-decoration: none; }
+    .tag { font-size: 24px; color: #8BC34A; text-align: center; margin: 4px 0 22px; }
+    .card { background: #f0ede4; color: #1a2a0a; border-radius: 18px; padding: 22px 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.35); }
+    .card h2 { font-size: 34px; line-height: 1; margin-bottom: 6px; }
+    .card p { font-size: 19px; color: #6b6450; line-height: 1.25; }
+    form { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; }
+    label { font-size: 20px; font-weight: 700; }
+    input[type=password] { width: 100%; padding: 12px 14px; border: 2px solid #ddd; border-radius: 10px; background: #fff; color: #222;
+      font: 18px/1.3 system-ui, sans-serif; outline: none; margin-top: 4px; }
+    input[type=password]:focus { border-color: #1a2a0a; }
+    .status { min-height: 20px; font: 15px/1.3 system-ui, sans-serif; color: #888; }
+    .status.err { color: #E63946; }
+    .btn { display: block; width: 100%; text-align: center; padding: 11px 18px; border: none; border-radius: 12px; font: 700 26px 'Caveat', cursive; cursor: pointer; text-decoration: none; }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+    .go { background: #FFD600; color: #1a2a0a; box-shadow: 0 4px 0 #b8920a; }
+    .edit { background: #FFD600; color: #1a2a0a; box-shadow: 0 4px 0 #b8920a; }
+    .test { background: #7B1FA2; color: #fff; box-shadow: 0 4px 0 #4A148C; }
+    .plain { background: #ddd8c8; color: #444; font-size: 22px; padding: 8px 16px; }
+    .stack { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+    .versions { margin-top: 12px; font: 15px/1.5 system-ui, sans-serif; color: #6b6450; background: #fff; border-radius: 10px; padding: 8px 12px; }
+    .back { display: block; text-align: center; margin-top: 18px; font-size: 21px; color: rgba(240,237,228,0.6); text-decoration: none; }
+    .back:hover { color: #f0ede4; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1><a href="../">DRIFT PARTY</a></h1>
+    <div class="tag">Admin</div>
+
+    <div class="card" id="loading"><p>Checking…</p></div>
+
+    <div class="card" id="login" hidden>
+      <h2>🔑 Admin login</h2>
+      <p>For the map editor, and publishing maps to the test version or the live game.</p>
+      <form id="form" novalidate>
+        <input type="text" name="username" value="admin" autocomplete="username" hidden />
+        <label>Password
+          <input type="password" name="password" id="password" autocomplete="current-password" required />
+        </label>
+        <div class="status" id="status" role="status"></div>
+        <button class="btn go" id="submit" type="submit">Log in ▶</button>
+      </form>
+    </div>
+
+    <div class="card" id="signedIn" hidden>
+      <h2>✓ You're logged in</h2>
+      <p>Open the map editor on the live game or the test version. Push to test, try it with phones, then push to production.</p>
+      <div class="versions" id="versions"></div>
+      <div class="stack">
+        <a class="btn edit" id="editLive" href="../screen/?edit">🛠 Map editor — live game</a>
+        <a class="btn test" id="editTest" href="../screen/?version=test&amp;edit">🧪 Map editor — test version</a>
+        <button class="btn plain" id="logout" type="button">🔓 Log out</button>
+      </div>
+    </div>
+
+    <div class="card" id="off" hidden>
+      <h2>Admin is switched off</h2>
+      <p>This server has no admin password. Set the <code>ADMIN_PASSWORD</code> secret on the Worker to turn it on.</p>
+    </div>
+
+    <a class="back" href="../">← Back to Drift Party</a>
+  </main>
+  <script type="module" src="/src/admin/main.ts"></script>
+</body>
+</html>

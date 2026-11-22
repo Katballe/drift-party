@@ -7,8 +7,9 @@
 //
 // Tracks can be tuned without touching the specs below: a TrackEdit per track
 // (grip, walls on/off, speed bumps, hand-placed checkpoints, off-road
-// penalties) comes from track-edits.json, and the dev build's track editor
-// layers its own draft edits on top (applyTrackEdits).
+// penalties) comes from the maps published from the map editor (live or test
+// version, fetched by the screen — see setBaseEdits), falling back to
+// track-edits.json; the editor layers its own draft edits on top (applyTrackEdits).
 
 import { hashStr, rng } from "../shared/sketch";
 import COMMITTED_EDITS from "./track-edits.json";
@@ -528,8 +529,20 @@ const SPECS: Spec[] = [
 ];
 
 export const TRACK_ORDER: TrackId[] = SPECS.map((s) => s.id);
-/** The edits that ship (see track-edits.json). */
-export const TRACK_EDITS: TrackEdits = COMMITTED_EDITS as TrackEdits;
+/**
+ * The base edits every track is built with: the maps published to this
+ * screen's channel (live or test, fetched from the server at start-up), or —
+ * until then, or if nothing is published — the ones that ship in the code
+ * (track-edits.json). The map editor layers its drafts on top. Replaced in
+ * place by setBaseEdits, so importers always see the current base.
+ */
+export const TRACK_EDITS: TrackEdits = { ...(COMMITTED_EDITS as TrackEdits) };
+
+/** Swap the base edits (null = back to track-edits.json). Doesn't rebuild — call applyTrackEdits. */
+export function setBaseEdits(edits: TrackEdits | null) {
+  for (const k of Object.keys(TRACK_EDITS)) delete TRACK_EDITS[k as TrackId];
+  Object.assign(TRACK_EDITS, edits ?? (COMMITTED_EDITS as TrackEdits));
+}
 /** Live track table. Entries are rebuilt in place by applyTrackEdits. */
 export const TRACKS = {} as Record<TrackId, TrackDef>;
 

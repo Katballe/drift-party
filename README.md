@@ -74,6 +74,47 @@ network (Wi-Fi, cellular, different houses).
   Driving the wrong way shows a warning. There is no sound — phones vibrate on
   laps, boosts, hits and the finish.
 
+## Admin: map editor, test version, production
+
+Log in at **`/admin/`** (or **🔑 Admin** in the big screen's lobby header, which
+brings you back to the screen after logging in) to get the **🛠 Map editor (E)**. The
+admin page also links straight to the editor on the live game or the test version. Edit tracks, then publish from the editor's *Publish* section:
+
+- **🧪 Push to test** — goes to the **test version** of the game. Anyone can open it
+  with the **🧪 Test version** button in the lobby header (next to *Test controller*),
+  i.e. `/screen/?version=test`; it shows a *TEST VERSION* badge and a **◀ Live version**
+  button back. Until something is pushed to test, it plays the live maps.
+- **🚀 Push to production** (asks to confirm) — everyone playing `/screen/` gets the
+  new maps. Screens already open pick them up when they reload (a screen mid-race
+  switches when it's back in the lobby).
+
+Each push sends every track as it is in the editor — the maps that screen plays plus
+your drafts. So the flow is: edit on the live game → push to test → open the test
+version and race it with phones → push to production from there. Drafts are kept
+in that browser, separately for the live game and the test version.
+
+The password is the Worker secret `ADMIN_PASSWORD` — set it once per Worker:
+
+```sh
+npx wrangler secret put ADMIN_PASSWORD             # drift-party (production)
+npx wrangler secret put ADMIN_PASSWORD --env dev   # drift-party-dev
+```
+
+For `npm run dev`, put `ADMIN_PASSWORD=…` in `.dev.vars` (gitignored). Without the
+secret, admin login is simply off. Changing the password logs every session out.
+
+How it's built (`src/worker/admin.ts`, `src/shared/admin.ts`, `admin/`):
+- Login sets an HttpOnly, `SameSite=Strict` session cookie (a week), signed with a key
+  derived from the password. 8 wrong passwords per sender per 15 minutes, then 429.
+- Published maps are rows in the `Maps` Durable Object (SQLite), one per channel
+  (`live`, `test`), each with a version number. `GET /api/maps?channel=…` is public
+  (the game needs it); `PUT /api/admin/maps/live|test` needs the admin cookie and a
+  JSON body (so other websites can't post it from a visitor's browser).
+- The editor is its own lazy-loaded chunk: only admins (and the dev build) download it.
+  The server is what enforces who can publish.
+- `src/screen/track-edits.json` is now the fallback when nothing is published; the
+  editor's *Export* still writes it.
+
 ## How it works
 
 ```
@@ -96,15 +137,17 @@ free tier.
 | `index.html`, `src/home/main.ts` | Landing page (host / join, 💬 feedback) |
 | `screen/`, `src/screen/main.ts` | Host page: lobby, HUD, results, keyboard, networking |
 | `src/screen/tracks.ts` | Track definitions: spline centerlines + widths → walls, gates, grid, pads, surfaces, scenery; applies track edits |
-| `src/screen/track-edits.json` | Shipped track tuning (grip, walls, bumps, checkpoints…) — export from the track editor |
+| `src/screen/track-edits.json` | Fallback track tuning when nothing is published (export from the map editor) |
 | `src/screen/sim.ts` | Pure race simulation (physics, walls/terrain, gates, boost/slipstream/catch-up, bumps, game modes incl. meteor swarm, bot driver) — no DOM |
 | `src/screen/render.ts` | Canvas renderer: hand-drawn tracks & scenery, skid marks, particles, cars, lobby thumbnails |
-| `src/screen/dev.ts` | Track editor + debug overlays — **dev build only** |
+| `src/screen/dev.ts` | Map editor + debug overlays — lazy-loaded for admins (always in the dev build) |
+| `admin/`, `src/admin/main.ts` | Admin login page |
+| `src/shared/admin.ts`, `src/worker/admin.ts` | Admin login + published maps (test / production) — see *Admin* above |
 | `src/shared/cars.ts`, `carArt.ts` | Car roster (physics + picker info) and the hand-drawn car art |
 | `controller/`, `src/controller/main.ts` | Phone gamepad |
 | `src/shared/protocol.ts` | Message protocol + close codes shared by all three |
 | `src/shared/net.ts` | Reconnecting WebSocket client with heartbeat |
-| `src/worker/` | Worker entry + `Room` Durable Object + `Feedback` Durable Object (`feedback.ts`) |
+| `src/worker/` | Worker entry + `Room` Durable Object + `Feedback` Durable Object (`feedback.ts`) + `Maps` Durable Object (`admin.ts`) |
 | `src/shared/feedback.ts` | The 💬 Feedback dialog (big screen and phones) |
 
 The `Room` Durable Object:
@@ -154,13 +197,13 @@ npm run dev        # dev build (with the track editor) + wrangler dev at http://
 npm run dev:lan    # same, reachable from phones on your Wi-Fi: open the screen via your PC's LAN IP
 ```
 
-### Track editor (dev build only)
+### Map editor
 
-`npm run dev`, `npm run dev:lan` and `npm run deploy:dev` build the client with
-`vite build --mode devtools`, which compiles in `src/screen/dev.ts`. The normal
-build (`npm run build` / `npm run deploy`) leaves it out entirely.
+On the live game it's there once you log in as admin (see *Admin* above). The dev
+build (`npm run dev`, `npm run dev:lan`, `npm run deploy:dev` — `vite build --mode
+devtools`) always loads it, without logging in; publishing still needs the login.
 
-In the lobby press **E** (or **🛠 Track editor**). Per track you can:
+In the lobby press **E** (or **🛠 Map editor**). Per track you can:
 - place items — **checkpoints** (C), **speed bumps** (B), **boost pads** (P),
   **sand / snow** (S), **oil slicks** (O), **scenery** (T) — by clicking empty
   road/ground with that tool;
@@ -185,9 +228,10 @@ In the lobby press **E** (or **🛠 Track editor**). Per track you can:
   nobody's in) — you come back to the editor after. **G** toggles checkpoint
   lines during races.
 
-Edits are drafts in that browser's localStorage, layered over
-`src/screen/track-edits.json`. To ship them: **Copy/Download JSON**, replace
-`src/screen/track-edits.json` with it, commit.
+Edits are drafts in that browser's localStorage, layered over the maps the screen
+plays (published live or test maps, else `src/screen/track-edits.json`). To ship
+them: **🧪 Push to test** / **🚀 Push to production** (see *Admin*), or
+**Copy/Download JSON** to replace `src/screen/track-edits.json` and commit.
 
 `npm run deploy:dev` deploys the dev build as a separate Worker
 (`drift-party-dev`, its own rooms) so it can be tested with real phones over the
@@ -215,6 +259,8 @@ Add `?debug` to the screen URL to expose the game as `window.drift`.
 - `npm run typecheck` — `tsc --noEmit`
 - `npm run check` — both of the above
 - `node test/relay.test.mjs` — relay integration test (needs `npm run dev` running)
+- `ADMIN_PASSWORD=… node test/admin.test.mjs` — admin login + publishing integration test (needs
+  `npm run dev` running with that password in `.dev.vars`; it publishes only to the local server)
 - `node test/feedback.test.mjs` — feedback endpoint integration test (needs `npm run dev` running;
   it uses up the local rate limit, so restart `npm run dev` before running it again within 10 minutes)
 - `npm run deploy` — check + build + `wrangler deploy` (production; what CI runs on push to `main`)
