@@ -1,15 +1,20 @@
-// Dev-build-only track editor + debug overlays (compiled in by `vite build
-// --mode devtools`; the production build never includes this module).
+// The map editor + debug overlays. Its own lazy-loaded chunk: the big screen
+// only downloads it for a logged-in admin (and always in the dev build).
 //
-// Edits are drafts kept in this browser (localStorage) and layered over the
-// shipped track-edits.json, so you can try things — checkpoints, speed bumps,
-// boost pads, sand, oil, scenery, ice grip, open tracks with no walls — in
-// real races with real phones, then export the JSON and commit it.
+// Edits are drafts kept in this browser (localStorage, one set per version of
+// the game) and layered over the maps this screen plays — the ones published
+// to the live game or the test version, or track-edits.json if nothing is
+// published. Try things — checkpoints, speed bumps, boost pads, sand, oil,
+// scenery, ice grip, open tracks with no walls — in real races with real
+// phones, then 🧪 push them to the test version, and 🚀 to production when
+// they're ready (admins only; the server checks).
 //
 // Click an item to select it: drag it to move it, and edit everything about
 // it (size, strength, position…) in the panel. Click empty ground with a
 // placement tool to add one; the eraser, Delete or the Remove button removes.
 
+import type { AdminStatus, MapChannel, MapsDoc } from "../shared/protocol";
+import { openLogin, publishMaps } from "./admin";
 import type { Renderer } from "./render";
 import { drawGateLine } from "./render";
 import type { Race } from "./sim";
@@ -31,6 +36,12 @@ export interface DevHost {
   saveSettings(): void;
   onTracksChanged(ids: TrackId[]): void;
   renderUI(): void;
+  /** Which published maps this screen plays, and what they are. */
+  channel: MapChannel;
+  maps: MapsDoc | null;
+  admin: AdminStatus;
+  refreshAdmin(): Promise<void>;
+  onPublished(doc: MapsDoc): void;
 }
 
 /** Things you can place on a track, one tool each. */
@@ -82,7 +93,11 @@ export class DevTools {
   debug: boolean;
   tool: Tool;
   patchR: number;
-  drafts: Drafts = load<Drafts>(DRAFT_KEY, {});
+  drafts: Drafts;
+  /** Drafts are kept per version of the game, since each layers over different maps. */
+  private draftKey: string;
+  private confirmLive = false; // "Push to production" was clicked once: ask to confirm
+  private busy = false;        // a push is in flight
   hover: { x: number; y: number } | null = null;
   sel: Hit | null = null;
   drag: { hit: Hit; sx: number; sy: number; x: number; y: number; moved: boolean } | null = null;
@@ -95,6 +110,8 @@ export class DevTools {
   private sliding = false; // a panel slider is being dragged: don't rebuild the panel under it
 
   constructor(private host: DevHost) {
+    this.draftKey = host.channel === "test" ? `${DRAFT_KEY}.test` : DRAFT_KEY;
+    this.drafts = load<Drafts>(this.draftKey, {});
     const ui = load(UI_KEY, { open: false, debug: false, tool: "checkpoint" as Tool, patchR: 38 });
     this.open = ui.open; this.debug = ui.debug;
     this.tool = TOOLS.some((t) => t.id === ui.tool) ? ui.tool : "checkpoint";
@@ -140,7 +157,7 @@ export class DevTools {
 
   set(patch: Draft, final = true) {
     this.drafts[this.id] = { ...(this.drafts[this.id] ?? {}), ...patch };
-    save(DRAFT_KEY, this.drafts);
+    save(this.draftKey, this.drafts);
     this.apply();
     if (final) this.render(true);
   }
@@ -654,7 +671,7 @@ export class DevTools {
         // Null every field the shipped file sets too, so this really is the original track.
         this.drafts[this.id] = Object.fromEntries(Object.keys(TRACK_EDITS[this.id] ?? {}).map((k) => [k, null])) as Draft;
         if (!Object.keys(this.drafts[this.id]!).length) delete this.drafts[this.id];
-        save(DRAFT_KEY, this.drafts); this.apply();
+        save(this.draftKey, this.drafts); this.apply();
         this.msg = `${t.name} is back to its original design.`;
         break;
       }
@@ -664,10 +681,14 @@ export class DevTools {
       case "clear": if (kind) { this.sel = null; this.set({ [FIELD[kind]]: [] } as Draft); this.msg = `All ${NAMES[kind][1].toLowerCase()} removed.`; } break;
       case "checker": this.set({ checkpointLines: el.dataset.on === "1" ? true : null }); break;
       case "walls": this.set({ walls: el.dataset.on === "1" ? null : false }); this.msg = el.dataset.on === "1" ? "Walls are back." : "Open track: drive anywhere — the screen edge is the wall."; break;
-      case "discardTrack": this.sel = null; delete this.drafts[this.id]; save(DRAFT_KEY, this.drafts); this.apply(); this.msg = `Draft edits for ${t.name} discarded.`; break;
-      case "discardAll": this.sel = null; this.drafts = {}; save(DRAFT_KEY, this.drafts); this.apply(); this.msg = "All draft edits discarded."; break;
+      case "discardTrack": this.sel = null; delete this.drafts[this.id]; save(this.draftKey, this.drafts); this.apply(); this.msg = `Draft edits for ${t.name} discarded.`; break;
+      case "discardAll": this.sel = null; this.drafts = {}; save(this.draftKey, this.drafts); this.apply(); this.msg = "All draft edits discarded."; break;
       case "debug": this.toggleDebug(); return;
       case "test": this.testDrive(); return;
+      case "publish": void this.publish(el.dataset.channel as MapChannel); return;
+      case "publishLive": this.confirmLive = true; this.msg = ""; break;
+      case "publishCancel": this.confirmLive = false; break;
+      case "login": openLogin(() => void this.host.refreshAdmin().then(() => this.render(true))); return;
       case "copy": {
         navigator.clipboard?.writeText(this.exportJSON()).then(() => { this.msg = "Copied — paste it over src/screen/track-edits.json."; this.render(true); })
           .catch(() => { this.msg = "Clipboard blocked — use Download instead."; this.render(true); });
@@ -715,6 +736,25 @@ export class DevTools {
     if (final) { this.pending = null; run(); return; }
     if (!this.pending) requestAnimationFrame(() => { const p = this.pending; this.pending = null; p?.(); });
     this.pending = run;
+  }
+
+  /** Push the maps as they are now (published base + drafts) to the test version or production. */
+  private async publish(channel: MapChannel) {
+    if (this.busy) return;
+    this.busy = true; this.confirmLive = false;
+    this.msg = channel === "live" ? "Pushing to production…" : "Pushing to the test version…";
+    this.render(true);
+    const res = await publishMaps(channel, this.effective());
+    this.busy = false;
+    if (typeof res === "string") { this.msg = res; this.render(true); return; }
+    this.host.onPublished(res);
+    if (channel === this.host.channel) { // what this screen plays now *is* the edits: the drafts are done
+      this.drafts = {}; save(this.draftKey, this.drafts); this.apply();
+    }
+    this.msg = channel === "live"
+      ? `🚀 Live — production now has these maps (v${res.version}). Screens that are already open get them when they reload.`
+      : `🧪 Pushed to the test version (v${res.version}).${this.host.channel === "test" ? "" : " Open 🧪 Test version in the lobby to race it with phones."}`;
+    this.render(true);
   }
 
   exportJSON(): string { return JSON.stringify(this.effective(), null, 2) + "\n"; }
@@ -787,6 +827,37 @@ export class DevTools {
     </div>`;
   }
 
+  /** Where the maps are published, and the push buttons. */
+  private publishHTML(dirty: boolean, btn: (dev: string, label: string, on?: boolean, extra?: string) => string, hint: (t: string) => string): string {
+    const host = this.host, test = host.channel === "test";
+    const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" }) : "");
+    const ver = (c: MapChannel) => {
+      const v = host.admin.maps?.[c];
+      return v ? (v.version ? `v${v.version} · ${when(v.updatedAt)}` : "nothing pushed yet") : "";
+    };
+    const here = test ? "🧪 the test version" : "the live game";
+    const status = `<div style="font-size:17px;line-height:1.25">This screen plays <b>${here}</b>${test && host.maps?.sameAsLive ? " (nothing pushed to test yet, so it's the live maps)" : ""}.<br>
+      ${dirty ? `<span style="color:#E65100">● Your drafts differ from it.</span>` : "No draft changes."}</div>`;
+    if (!host.admin.admin) {
+      return `${status}<div style="margin-top:6px">${btn("login", "🔑 Log in as admin to publish")}</div>
+        ${hint(host.admin.configured ? "Drafts stay in this browser until you publish them." : "Admin login needs the ADMIN_PASSWORD secret on the server.")}`;
+    }
+    const big = (dev: string, label: string, bg: string, fg: string, extra = "") =>
+      `<button data-dev="${dev}" ${extra} ${this.busy ? "disabled" : ""} style="border:none;background:${bg};color:${fg};border-radius:11px;padding:7px 14px;font:700 20px Caveat,cursive;cursor:${this.busy ? "default" : "pointer"};opacity:${this.busy ? 0.6 : 1}">${label}</button>`;
+    const versions = `<div style="font-size:15px;color:#7a7460;margin-top:4px;line-height:1.3">🧪 Test: ${ver("test")}<br>🚀 Production: ${ver("live")}</div>`;
+    const buttons = this.confirmLive
+      ? `<div style="margin-top:8px;background:#fff;border:3px solid #E63946;border-radius:12px;padding:8px 10px">
+          <div style="font-size:18px;line-height:1.2">Push these maps to <b>production</b>? Everyone playing Drift Party gets them.</div>
+          <div style="display:flex;gap:6px;margin-top:6px">${big("publish", "🚀 Yes, push to production", "#E63946", "#fff", 'data-channel="live"')} ${btn("publishCancel", "Cancel")}</div>
+        </div>`
+      : `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+          ${big("publish", "🧪 Push to test", "#7B1FA2", "#fff", 'data-channel="test"')}
+          ${big("publishLive", "🚀 Push to production", "#1a2a0a", "#FFD600")}
+        </div>`;
+    return status + versions + buttons
+      + hint("Pushes every track as it is now — the published maps plus your drafts. Try it on 🧪 Test version first.");
+  }
+
   private panelHTML(): string {
     const t = this.track, id = this.id;
     const d = this.drafts[id] ?? {}, dirty = Object.keys(d).length > 0;
@@ -818,10 +889,10 @@ export class DevTools {
       : `Click empty road/ground to add a ${NAMES[this.tool][0].toLowerCase()} · click anything placed to select it.`;
     return `
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <div style="font-size:28px;font-weight:700;line-height:1">🛠 Track editor</div>
+        <div style="font-size:28px;font-weight:700;line-height:1">🛠 Map editor</div>
         ${btn("close", "✕ Close")}
       </div>
-      ${hint("Dev build only. Changes are drafts in this browser until you export them.")}
+      ${hint(`Changes are drafts in this browser until you publish them (below).${this.host.channel === "test" ? " Editing on top of the 🧪 test version." : ""}`)}
       <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:10px">${tracks}</div>
 
       ${h("Place, select & edit")}
@@ -857,14 +928,16 @@ export class DevTools {
       </div>
       ${hint("Races this track with the phones and bots in the lobby (adds 3 bots if nobody's in). You come back here after.")}
 
-      ${h("Save")}
-      <div style="font-size:17px">${anyDirty ? "● Draft differs from what ships." : "No draft changes — this is what ships."}</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px">
-        ${btn("copy", "Copy JSON")} ${btn("download", "Download JSON")}
+      ${h("Publish")}
+      ${this.publishHTML(anyDirty, btn, hint)}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
         ${Object.keys(own).length ? btn("resetTrack", `↺ Reset ${t.name.split(" ")[0]} to original`) : ""}
         ${anyDirty ? btn("discardAll", "Discard all drafts") : ""}
       </div>
-      ${hint("To ship: the exported JSON replaces <code>src/screen/track-edits.json</code>; commit it and it goes out with the next deploy.")}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center">
+        <span style="font-size:16px;color:#7a7460">Export:</span> ${btn("copy", "Copy JSON")} ${btn("download", "Download JSON")}
+      </div>
+      ${hint("The exported JSON can replace <code>src/screen/track-edits.json</code> — what the game falls back to when nothing is published.")}
       ${hint("Keys: E editor · C B P S O T X tools · Del remove · arrows nudge · Enter test drive · G checkpoint lines · Esc deselect / close")}`;
   }
 }

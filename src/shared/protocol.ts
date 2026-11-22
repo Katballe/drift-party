@@ -97,7 +97,29 @@ export interface FeedbackBody { source: FeedbackSource; message: string; contact
 export const FEEDBACK_MAX = 2000;
 export const FEEDBACK_CONTACT_MAX = 120;
 
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I,O,0,1
+// ── Admin + published maps (plain HTTP) ──────────────────────────────────────
+// Track edits published from the map editor live on the server in two channels:
+//   "live" — what everyone plays at /screen/
+//   "test" — the test version, /screen/?version=test (falls back to live until
+//            something is pushed to test)
+// GET  /api/maps?channel=live|test   → MapsDoc (public)
+// POST /api/admin/login {password}   → 204 + session cookie · 401 · 429 · 503 not set up
+// POST /api/admin/logout             → 204, cookie cleared
+// GET  /api/admin/me                 → AdminStatus
+// PUT  /api/admin/maps/live|test {edits} → MapsDoc (admin only)
+export const MAP_CHANNELS = ["live", "test"] as const;
+export type MapChannel = (typeof MAP_CHANNELS)[number];
+/** `edits` is a TrackEdits object; null = nothing published (use the edits that ship in the code). */
+export interface MapsDoc {
+  channel: MapChannel; edits: Record<string, unknown> | null; version: number; updatedAt: string | null;
+  /** Test channel only: nothing pushed to test yet, so this is the live maps. */
+  sameAsLive?: boolean;
+}
+export interface AdminStatus { admin: boolean; configured: boolean; maps?: Record<MapChannel, { version: number; updatedAt: string | null }>; }
+/** Max size of a published edits JSON, in bytes. */
+export const MAPS_MAX_BYTES = 256 * 1024;
+
+const CODE_ALPHABET ="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I,O,0,1
 
 /** 6-char room code (no ambiguous chars). */
 export function makeRoomCode(): string {

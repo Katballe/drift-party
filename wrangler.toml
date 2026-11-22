@@ -32,6 +32,17 @@ class_name = "Feedback"
 tag = "v2"
 new_sqlite_classes = ["Feedback"]
 
+# Admin login + published maps (the map editor's "push to test / production").
+# The admin password is a secret: `npx wrangler secret put ADMIN_PASSWORD`
+# (and `--env dev` for drift-party-dev); locally it comes from .dev.vars.
+[[durable_objects.bindings]]
+name = "MAPS"
+class_name = "Maps"
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["Maps"]
+
 # Dev environment: `npm run deploy:dev` → Worker `drift-party-dev`, played at
 #   https://drift-party-dev.mkatballe.workers.dev/screen/            (public)
 #   https://katballe-studio-dev.mkatballe.workers.dev/drift-party/   (behind the dev
@@ -58,3 +69,11 @@ class_name = "Feedback"
 [[env.dev.migrations]]
 tag = "v2"
 new_sqlite_classes = ["Feedback"]
+
+[[env.dev.durable_objects.bindings]]
+name = "MAPS"
+class_name = "Maps"
+
+[[env.dev.migrations]]
+tag = "v3"
+new_sqlite_classes = ["Maps"]

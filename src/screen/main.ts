@@ -3,6 +3,7 @@ import { Net, appRoot } from "../shared/net";
 import { carIcon } from "../shared/carArt";
 import { carLabel } from "../shared/cars";
 import { feedbackOpen, openFeedback } from "../shared/feedback";
+import { fetchAdmin, fetchMaps, loginOpen, logout, mapChannel, openLogin, versionUrl } from "./admin";
 import {
   ALL_SLOTS,
   BOT_IDS,
@@ -36,11 +37,14 @@ import {
   type RacerId,
   type ResultRow,
   type Standing,
+  type AdminStatus,
+  type MapChannel,
+  type MapsDoc,
 } from "../shared/protocol";
 import type { DevTools } from "./dev";
 import { Renderer, ordinal } from "./render";
 import { GAME_MODES, Race, STEP, type BotSkill, type Entrant, type GameMode, type SimCar } from "./sim";
-import { TRACKS, TRACK_ORDER, type TrackId } from "./tracks";
+import { TRACKS, TRACK_EDITS, TRACK_ORDER, applyTrackEdits, setBaseEdits, type TrackEdits, type TrackId } from "./tracks";
 
 /** A player is a connected phone. The big screen is never a player. */
 interface Player {
@@ -109,8 +113,15 @@ class DriftScreen {
   lastStatus = ""; lastStatusT = 0; lastHudT = 0;
 
   els!: { lobby: HTMLElement; countdown: HTMLElement; hud: HTMLElement; results: HTMLElement };
-  /** Track editor + debug overlays — only exists in the dev build. */
+  /** Map editor + debug overlays — loaded for a logged-in admin (and always in the dev build). */
   dev: DevTools | null = null;
+  /** Which published maps this screen plays: "live", or "test" at /screen/?version=test. */
+  channel: MapChannel = mapChannel();
+  /** The published maps this screen is playing (null until fetched / if the server has none). */
+  maps: MapsDoc | null = null;
+  /** Published maps that arrived mid-race: applied back in the lobby. */
+  pendingMaps: MapsDoc | null = null;
+  admin: AdminStatus = { admin: false, configured: false };
   html = new Map<HTMLElement, string>();
 
   // ── setup ─────────────────────────────────────────────────────────────────
@@ -147,7 +158,9 @@ class DriftScreen {
     document.addEventListener("fullscreenchange", () => this.renderUI());
 
     this.openRoom();
-    if (__DEV_TOOLS__) void import("./dev").then(({ DevTools }) => { this.dev = new DevTools(this); this.renderUI(); });
+    if (__DEV_TOOLS__) this.loadEditor();
+    void fetchMaps(this.channel).then((doc) => { if (doc) this.useMaps(doc); });
+    void this.refreshAdmin();
     if (__DEV_TOOLS__ || new URLSearchParams(location.search).has("debug")) (window as any).drift = this;
     this.last = performance.now();
     requestAnimationFrame((t) => this.loop(t));
@@ -163,7 +176,51 @@ class DriftScreen {
     this.stage.style.fontSize = (parseFloat(c.style.width) / 1600) * 20 + "px";
   }
 
-  /** Tracks were rebuilt (dev editor): refresh what shows them. */
+  // ── published maps & admin ─────────────────────────────────────────────────
+  /** Play these published maps (in the lobby; mid-race they wait for the lobby). */
+  useMaps(doc: MapsDoc) {
+    if (this.phase !== "LOBBY") { this.pendingMaps = doc; return; }
+    this.maps = doc; this.pendingMaps = null;
+    setBaseEdits(doc.edits as TrackEdits | null);
+    this.rebuildTracks();
+  }
+
+  /** Rebuild tracks from the base edits (+ the editor's drafts, if it's open). */
+  rebuildTracks() {
+    if (this.dev) this.dev.apply();
+    else { const changed = applyTrackEdits(TRACK_EDITS); if (changed.length) this.onTracksChanged(changed); }
+  }
+
+  async refreshAdmin() {
+    this.admin = await fetchAdmin();
+    if (this.admin.admin) this.loadEditor();
+    this.renderUI();
+  }
+
+  /** The map editor is its own chunk: only admins (and the dev build) download it. */
+  loadEditor() {
+    if (this.dev) return;
+    void import("./dev").then(({ DevTools }) => { this.dev ??= new DevTools(this); this.renderUI(); });
+  }
+
+  async adminLogout() {
+    await logout();
+    this.admin = { admin: false, configured: this.admin.configured };
+    if (!__DEV_TOOLS__ && this.dev) { // the live game: the editor and its drafts go away
+      this.dev.toggle(false);
+      this.dev = null;
+      this.rebuildTracks();
+    }
+    this.renderUI();
+  }
+
+  /** The editor published to a channel. */
+  onPublished(doc: MapsDoc) {
+    if (this.admin.maps) this.admin.maps[doc.channel] = { version: doc.version, updatedAt: doc.updatedAt };
+    if (doc.channel === this.channel) { this.maps = doc; setBaseEdits(doc.edits as TrackEdits | null); }
+  }
+
+  /** Tracks were rebuilt (map editor / published maps): refresh what shows them. */
   onTracksChanged(ids: TrackId[]) {
     for (const id of ids) if (this.thumbs[id]) this.thumbs[id] = Renderer.thumbnail(TRACKS[id], 300);
     if (ids.includes(this.trackId)) this.renderer.setTrack(TRACKS[this.trackId]);
@@ -388,6 +445,7 @@ class DriftScreen {
     this.players = this.players.map((p) => (p && p.connected ? { ...p, ready: false } : null));
     this.results = [];
     this.phase = "LOBBY";
+    if (this.pendingMaps) this.useMaps(this.pendingMaps);
     this.trackId = this.settings.track;
     this.renderer.setTrack(TRACKS[this.trackId]);
     this.sendPhase();
@@ -445,9 +503,9 @@ class DriftScreen {
     }
 
     if (this.phase !== "LOBBY") {
-      this.renderer.frame(race, this.phase === "RACING" ? alpha : 1, this.phase === "RACING" ? dt : 0, __DEV_TOOLS__ ? this.dev?.raceOverlay(race) : undefined);
+      this.renderer.frame(race, this.phase === "RACING" ? alpha : 1, this.phase === "RACING" ? dt : 0, this.dev?.raceOverlay(race));
       if (t - this.lastHudT > 150) { this.lastHudT = t; this.renderUI(); }
-    } else if (__DEV_TOOLS__ && this.dev?.editing) this.renderer.frame(null, 1, 0, this.dev.editorOverlay);
+    } else if (this.dev?.editing) this.renderer.frame(null, 1, 0, this.dev.editorOverlay);
     requestAnimationFrame((tt) => this.loop(tt));
   }
 
@@ -491,8 +549,8 @@ class DriftScreen {
 
   // ── input ─────────────────────────────────────────────────────────────────
   onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement)?.tagName === "INPUT" || feedbackOpen()) return;
-    if (__DEV_TOOLS__ && this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
+    if ((e.target as HTMLElement)?.tagName === "INPUT" || feedbackOpen() || loginOpen()) return;
+    if (this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
     if (e.repeat) return;
     switch (e.code) {
       case "Enter": case "NumpadEnter":
@@ -544,7 +602,11 @@ class DriftScreen {
       case "newRoom": this.openRoom(true); break;
       case "openController": window.open(this.controllerUrl(), "_blank"); break;
       case "feedback": openFeedback("screen"); break;
-      case "devOpen": if (__DEV_TOOLS__) this.dev?.toggle(true); break;
+      case "devOpen": this.dev?.toggle(true); break;
+      case "adminLogin": openLogin(() => void this.refreshAdmin()); break;
+      case "adminLogout": void this.adminLogout(); break;
+      case "testVersion": location.href = versionUrl("test"); return;
+      case "liveVersion": location.href = versionUrl("live"); return;
     }
     this.renderUI();
   }
@@ -561,9 +623,9 @@ class DriftScreen {
   renderUI() {
     if (!this.els) return;
     const ph = this.phase;
-    const lobby = ph === "LOBBY" && !(__DEV_TOOLS__ && this.dev?.editing);
+    const lobby = ph === "LOBBY" && !this.dev?.editing;
     this.set(this.els.lobby, lobby ? this.lobbyHTML() : "", lobby);
-    if (__DEV_TOOLS__) this.dev?.render();
+    this.dev?.render();
     document.getElementById("root")!.dataset.race = String(this.inRace);
     const showCount = ph === "COUNTDOWN" || ph === "PAUSED" || (ph === "RACING" && this.goT > 0);
     this.set(this.els.countdown, showCount ? this.overlayHTML() : "", showCount);
@@ -637,16 +699,26 @@ class DriftScreen {
     // Layout that changes with the screen size is in classes (screen/index.html):
     // phones and tablets stack the lobby and scroll it, with START pinned at the bottom.
     const hbtn = 'class="lb-hbtn"';
+    const ghost = "background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2)";
+    const test = this.channel === "test";
+    const testBadge = test
+      ? `<span title="${this.maps?.sameAsLive ? "Nothing pushed to test yet — same maps as the live game" : `Test maps v${this.maps?.version ?? "…"}`}" style="display:inline-block;margin-left:10px;padding:1px 10px;border-radius:9px;background:#7B1FA2;color:#fff;font-size:.5em;vertical-align:middle">🧪 TEST VERSION${this.maps && !this.maps.sameAsLive ? ` · v${this.maps.version}` : ""}</span>` : "";
     return `<div class="lb" style="position:absolute;inset:0;background:#f0ede4;display:flex;flex-direction:column;z-index:10">
       <div class="lb-head" style="background:#1a2a0a;display:flex;align-items:center;justify-content:space-between;gap:8px 12px;flex-shrink:0">
         <div>
-          <div class="lb-title" style="font-weight:700;color:#FFD600;line-height:1">DRIFT PARTY</div>
+          <div class="lb-title" style="font-weight:700;color:#FFD600;line-height:1">DRIFT PARTY${testBadge}</div>
           <div class="lb-tagline" style="color:#8BC34A;margin-top:2px">Free online party racing — your phone is the controller</div>
         </div>
         <div class="lb-row" style="display:flex;gap:8px">
           ${this.btn("feedback", "💬 Feedback", "background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2)", hbtn)}
           ${this.btn("fullscreen", document.fullscreenElement ? "⤡ Exit fullscreen" : "⛶ Fullscreen", "background:rgba(255,255,255,0.1);color:#fff;border:1px solid rgba(255,255,255,0.2)", hbtn)}
-          ${__DEV_TOOLS__ && this.dev ? this.btn("devOpen", "🛠 Track editor (E)", "background:#FFD600;color:#1a2a0a", hbtn) : ""}
+          ${this.admin.admin
+            ? this.btn("adminLogout", "🔓 Log out", ghost, `${hbtn} title="Log out of admin"`)
+            : this.btn("adminLogin", "🔑 Admin", ghost, `${hbtn} title="Admin login (map editor)"`)}
+          ${this.dev ? this.btn("devOpen", "🛠 Map editor (E)", "background:#FFD600;color:#1a2a0a", hbtn) : ""}
+          ${test
+            ? this.btn("liveVersion", "◀ Live version", "background:#fff;color:#1a2a0a", `${hbtn} title="Back to the live game"`)
+            : this.btn("testVersion", "🧪 Test version", "background:#7B1FA2;color:#fff", `${hbtn} title="Play the test version of the maps"`)}
           ${this.btn("openController", "Test controller ↗", "background:#E63946;color:#fff", hbtn)}
         </div>
       </div>
