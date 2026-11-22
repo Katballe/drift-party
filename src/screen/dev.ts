@@ -14,7 +14,7 @@
 // placement tool to add one; the eraser, Delete or the Remove button removes.
 
 import type { AdminStatus, MapChannel, MapsDoc } from "../shared/protocol";
-import { openLogin, publishMaps } from "./admin";
+import { adminPageUrl, publishMaps } from "../shared/admin";
 import type { Renderer } from "./render";
 import { drawGateLine } from "./render";
 import type { Race } from "./sim";
@@ -688,7 +688,7 @@ export class DevTools {
       case "publish": void this.publish(el.dataset.channel as MapChannel); return;
       case "publishLive": this.confirmLive = true; this.msg = ""; break;
       case "publishCancel": this.confirmLive = false; break;
-      case "login": openLogin(() => void this.host.refreshAdmin().then(() => this.render(true))); return;
+      case "login": location.href = adminPageUrl(); return;
       case "copy": {
         navigator.clipboard?.writeText(this.exportJSON()).then(() => { this.msg = "Copied — paste it over src/screen/track-edits.json."; this.render(true); })
           .catch(() => { this.msg = "Clipboard blocked — use Download instead."; this.render(true); });

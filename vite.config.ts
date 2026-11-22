@@ -5,6 +5,7 @@ import { defineConfig } from "vite";
 //   index.html        → /            (redirects to /screen/)
 //   screen/index.html → /screen/     (the game host: canvas race + lobby)
 //   controller/...    → /controller/ (the phone gamepad)
+//   admin/index.html  → /admin/      (admin login → map editor)
 // Output goes to dist/, which the Worker serves via the [assets] binding.
 //
 // `vite build --mode devtools` (npm run dev / deploy:dev) compiles in the track
@@ -26,6 +27,7 @@ export default defineConfig(({ mode }) => ({
         index: resolve(__dirname, "index.html"),
         screen: resolve(__dirname, "screen/index.html"),
         controller: resolve(__dirname, "controller/index.html"),
+        admin: resolve(__dirname, "admin/index.html"),
       },
     },
   },

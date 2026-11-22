@@ -3,7 +3,7 @@ import { Net, appRoot } from "../shared/net";
 import { carIcon } from "../shared/carArt";
 import { carLabel } from "../shared/cars";
 import { feedbackOpen, openFeedback } from "../shared/feedback";
-import { fetchAdmin, fetchMaps, loginOpen, logout, mapChannel, openLogin, versionUrl } from "./admin";
+import { adminPageUrl, fetchAdmin, fetchMaps, logout, mapChannel, versionUrl } from "../shared/admin";
 import {
   ALL_SLOTS,
   BOT_IDS,
@@ -122,6 +122,14 @@ class DriftScreen {
   /** Published maps that arrived mid-race: applied back in the lobby. */
   pendingMaps: MapsDoc | null = null;
   admin: AdminStatus = { admin: false, configured: false };
+  /** /screen/?edit (from the admin page): open the map editor once it's loaded. */
+  openEditor = (() => {
+    const u = new URL(location.href);
+    if (!u.searchParams.has("edit")) return false;
+    u.searchParams.delete("edit"); // once: a reload shouldn't keep reopening it
+    history.replaceState(null, "", u.pathname + u.search + u.hash);
+    return true;
+  })();
   html = new Map<HTMLElement, string>();
 
   // ── setup ─────────────────────────────────────────────────────────────────
@@ -200,7 +208,12 @@ class DriftScreen {
   /** The map editor is its own chunk: only admins (and the dev build) download it. */
   loadEditor() {
     if (this.dev) return;
-    void import("./dev").then(({ DevTools }) => { this.dev ??= new DevTools(this); this.renderUI(); });
+    void import("./dev").then(({ DevTools }) => {
+      this.dev ??= new DevTools(this);
+      if (this.openEditor && this.phase === "LOBBY") this.dev.toggle(true);
+      this.openEditor = false;
+      this.renderUI();
+    });
   }
 
   async adminLogout() {
@@ -549,7 +562,7 @@ class DriftScreen {
 
   // ── input ─────────────────────────────────────────────────────────────────
   onKey(e: KeyboardEvent) {
-    if ((e.target as HTMLElement)?.tagName === "INPUT" || feedbackOpen() || loginOpen()) return;
+    if ((e.target as HTMLElement)?.tagName === "INPUT" || feedbackOpen()) return;
     if (this.dev?.onKey(e)) return; // (sees key repeats: held arrows keep nudging)
     if (e.repeat) return;
     switch (e.code) {
@@ -603,7 +616,7 @@ class DriftScreen {
       case "openController": window.open(this.controllerUrl(), "_blank"); break;
       case "feedback": openFeedback("screen"); break;
       case "devOpen": this.dev?.toggle(true); break;
-      case "adminLogin": openLogin(() => void this.refreshAdmin()); break;
+      case "adminLogin": location.href = adminPageUrl(); return;
       case "adminLogout": void this.adminLogout(); break;
       case "testVersion": location.href = versionUrl("test"); return;
       case "liveVersion": location.href = versionUrl("live"); return;

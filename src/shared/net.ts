@@ -9,11 +9,11 @@ export interface NetHandlers {
 
 /**
  * The app's root path: "/" normally, "/drift-party/" when served under a path
- * (the katballe-studio dev site). Pages live at <root>, <root>screen/ and
- * <root>controller/, and the relay at <root>ws.
+ * (the katballe-studio dev site). Pages live at <root>, <root>screen/,
+ * <root>controller/ and <root>admin/, and the relay at <root>ws.
  */
 export function appRoot(): string {
-  const m = /^(.*\/)(screen|controller)(\/|$)/.exec(location.pathname);
+  const m = /^(.*\/)(screen|controller|admin)(\/|$)/.exec(location.pathname);
   return m ? m[1] : location.pathname.replace(/[^/]*$/, "");
 }
 

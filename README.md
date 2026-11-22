@@ -76,8 +76,9 @@ network (Wi-Fi, cellular, different houses).
 
 ## Admin: map editor, test version, production
 
-Log in as admin on the big screen (**🔑 Admin** in the lobby header) to get the
-**🛠 Map editor (E)**. Edit tracks, then publish from the editor's *Publish* section:
+Log in at **`/admin/`** (or **🔑 Admin** in the big screen's lobby header, which
+brings you back to the screen after logging in) to get the **🛠 Map editor (E)**. The
+admin page also links straight to the editor on the live game or the test version. Edit tracks, then publish from the editor's *Publish* section:
 
 - **🧪 Push to test** — goes to the **test version** of the game. Anyone can open it
   with the **🧪 Test version** button in the lobby header (next to *Test controller*),
@@ -102,7 +103,7 @@ npx wrangler secret put ADMIN_PASSWORD --env dev   # drift-party-dev
 For `npm run dev`, put `ADMIN_PASSWORD=…` in `.dev.vars` (gitignored). Without the
 secret, admin login is simply off. Changing the password logs every session out.
 
-How it's built (`src/worker/admin.ts`, `src/screen/admin.ts`):
+How it's built (`src/worker/admin.ts`, `src/shared/admin.ts`, `admin/`):
 - Login sets an HttpOnly, `SameSite=Strict` session cookie (a week), signed with a key
   derived from the password. 8 wrong passwords per sender per 15 minutes, then 429.
 - Published maps are rows in the `Maps` Durable Object (SQLite), one per channel
@@ -140,7 +141,8 @@ free tier.
 | `src/screen/sim.ts` | Pure race simulation (physics, walls/terrain, gates, boost/slipstream/catch-up, bumps, game modes incl. meteor swarm, bot driver) — no DOM |
 | `src/screen/render.ts` | Canvas renderer: hand-drawn tracks & scenery, skid marks, particles, cars, lobby thumbnails |
 | `src/screen/dev.ts` | Map editor + debug overlays — lazy-loaded for admins (always in the dev build) |
-| `src/screen/admin.ts`, `src/worker/admin.ts` | Admin login + published maps (test / production) — see *Admin* above |
+| `admin/`, `src/admin/main.ts` | Admin login page |
+| `src/shared/admin.ts`, `src/worker/admin.ts` | Admin login + published maps (test / production) — see *Admin* above |
 | `src/shared/cars.ts`, `carArt.ts` | Car roster (physics + picker info) and the hand-drawn car art |
 | `controller/`, `src/controller/main.ts` | Phone gamepad |
 | `src/shared/protocol.ts` | Message protocol + close codes shared by all three |
