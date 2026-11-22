@@ -11,6 +11,10 @@
 // speed bumps. On an open track (walls off) the road has no walls: the
 // terrain slows you and loosens grip, the scenery is solid, and the screen
 // edge is the only hard wall.
+//
+// Game modes: "classic" is the plain race. "meteors" (Meteor swarm) drops
+// meteors around the cars at semi-random intervals: a shadow marks the spot,
+// and a car caught in the blast spins out and can't accelerate for a moment.
 
 import { CAR_CFGS, type CarCfg } from "../shared/cars";
 import { MAX_RACERS, type CarType, type RacerId } from "../shared/protocol";
@@ -30,6 +34,21 @@ export const BOT_SKILLS: Record<BotSkill, { pace: number; corner: number; line: 
   normal: { pace: 0.94, corner: 0.8,  line: 0.2 },
   hard:   { pace: 1.0,  corner: 0.86, line: 0.08 },
 };
+
+/** "classic" = a plain race; "meteors" = Meteor swarm (see METEOR). */
+export type GameMode = "classic" | "meteors";
+export const GAME_MODES: GameMode[] = ["classic", "meteors"];
+
+/**
+ * Meteor swarm tuning. A wave comes every `gap` s (random in the range, a
+ * little sooner with a big field) and drops `perWave` meteors, each aimed near
+ * a random car — down the road at about where it'll be when the meteor lands,
+ * give or take `scatter` px.
+ * The shadow warns for `warn` s. Caught in the blast (`r`): the car spins for
+ * `spin` s with no throttle or steering, then is safe for `immune` s.
+ */
+export const METEOR = { warn: 1.6, r: 48, gap: [1.6, 4.2] as [number, number], perWave: 3, grace: 3, spin: 1.3, immune: 1, scatter: 90 };
+export interface Meteor { x: number; y: number; r: number; t: number; fall: number; target: RacerId; }
 
 const BOOST_TIME = 1.1, BOOST_MUL = 1.32, DRAFT_MUL = 1.08, SAND_MUL = 0.6;
 
@@ -75,6 +94,7 @@ export interface SimCar {
   offRoad: boolean;     // open tracks: on the terrain, not the road
   missed: boolean;      // drove past its next checkpoint without crossing it
   boostT: number; padCool: number[];
+  spinT: number; spinW: number; meteorCool: number; // meteor hit: spinning out (s left, rad/s), then briefly immune
   draftT: number; drafting: boolean;
   topMul: number;
   corner: number;       // driver: fraction of the grip limit it takes bends at
@@ -88,6 +108,8 @@ export type SimEvent =
   | { k: "final"; id: RacerId }
   | { k: "finish"; id: RacerId; rank: number; time: number }
   | { k: "boost"; id: RacerId }
+  | { k: "meteor"; x: number; y: number; r: number }
+  | { k: "spun"; id: RacerId }
   | { k: "bump"; x: number; y: number; imp: number; id: RacerId };
 
 /** A car's collision footprint: its body length, and its width including the wheels that stick out. */
@@ -122,8 +144,11 @@ export class Race {
   finCount = 0;
   firstFinish = Infinity;
   readonly N: number;
+  /** Meteor swarm: meteors on their way down. */
+  meteors: Meteor[] = [];
+  private meteorT = 0;
 
-  constructor(public track: TrackDef, entrants: Entrant[], public laps: number, rand: () => number = Math.random) {
+  constructor(public track: TrackDef, entrants: Entrant[], public laps: number, private rand: () => number = Math.random, public mode: GameMode = "classic") {
     this.N = track.gates.length;
     this.cars = entrants.slice(0, MAX_RACERS).map((e, i) => {
       const sp = track.starts[i];
@@ -139,7 +164,7 @@ export class Race {
         lapStart: 0, bestLap: null,
         idx: nearestIndex(track, sp.x, sp.y, 0), stuckT: 0, reverseT: 0,
         wrongT: 0, wrongWay: false, hits: 0, wallT: 0, onOil: false, onSand: false, oilK: 0, sandK: 0, offRoad: false, missed: false,
-        boostT: 0, padCool: track.boosts.map(() => 0), draftT: 0, drafting: false, topMul: 1,
+        boostT: 0, padCool: track.boosts.map(() => 0), spinT: 0, spinW: 0, meteorCool: 0, draftT: 0, drafting: false, topMul: 1,
         corner: sk.corner, lane: laneBase, laneTgt: laneBase, laneBase, wander: e.ai ? sk.line : 0, passT: 0,
       };
     });
@@ -166,6 +191,7 @@ export class Race {
       else if (c.ai || c.finished) this.drive(c, dt);
     }
     this.modifiers(dt);
+    if (this.mode === "meteors") this.meteorStep(dt);
     for (const c of this.cars) this.physics(c, dt);
     this.collide(true);
     this.collide(false); // settle pile-ups: a push can shove a car into a third one
@@ -241,6 +267,58 @@ export class Race {
     }
   }
 
+  // ── meteor swarm ──────────────────────────────────────────────────────────
+  private meteorStep(dt: number) {
+    for (const c of this.cars) { c.meteorCool = Math.max(0, c.meteorCool - dt); }
+    for (const m of this.meteors) m.t -= dt;
+    for (const m of this.meteors) if (m.t <= 0) this.impact(m);
+    this.meteors = this.meteors.filter((m) => m.t > 0);
+    if (this.time < METEOR.grace) return; // let the field get away from the grid first
+    if ((this.meteorT -= dt) > 0) return;
+    const live = this.cars.filter((c) => !c.ghost && !c.finished);
+    if (!live.length) return;
+    const [g0, g1] = METEOR.gap, R = this.rand;
+    this.meteorT = (g0 + R() * (g1 - g0)) * (live.length > 4 ? 0.8 : 1);
+    const n = 1 + Math.floor(R() * Math.min(METEOR.perWave, live.length));
+    const pool = [...live];
+    for (let k = 0; k < n && pool.length; k++) {
+      const c = pool.splice(Math.floor(R() * pool.length), 1)[0];
+      // Aim down the road at about where the car will be when it lands (on its
+      // line across the road), give or take — keep driving the same and it hits.
+      const P = this.track.pts, n = P.length, here = P[c.idx];
+      const ahead = Math.max(0, c.fwd) * METEOR.warn * (0.3 + R() * 0.9);
+      const p = P[(c.idx + Math.round(ahead / 8)) % n];
+      const lat = Math.max(-p.hw, Math.min(p.hw, (c.x - here.x) * here.nx + (c.y - here.y) * here.ny));
+      const a = R() * Math.PI * 2, d = R() * METEOR.scatter;
+      const x = p.x + p.nx * lat + Math.cos(a) * d, y = p.y + p.ny * lat + Math.sin(a) * d;
+      this.meteors.push({
+        x: Math.max(BOUNDS.x0 + 20, Math.min(BOUNDS.x1 - 20, x)), y: Math.max(BOUNDS.y0 + 20, Math.min(BOUNDS.y1 - 20, y)),
+        r: METEOR.r * (0.85 + R() * 0.35), t: METEOR.warn, fall: METEOR.warn, target: c.id,
+      });
+    }
+  }
+
+  /** A meteor lands: everyone in the blast spins out, flung away from the middle. */
+  private impact(m: Meteor) {
+    this.events.push({ k: "meteor", x: m.x, y: m.y, r: m.r });
+    for (const c of this.cars) {
+      if (c.ghost || c.finished || c.spinT > 0 || c.meteorCool > 0) continue;
+      const dx = c.x - m.x, dy = c.y - m.y, d = Math.hypot(dx, dy);
+      if (d > m.r + c.cfg.h * 0.5) continue;
+      const ux = d > 1e-3 ? dx / d : Math.cos(c.a), uy = d > 1e-3 ? dy / d : Math.sin(c.a);
+      const keep = 0.5;
+      c.vx = c.vx * keep + ux * 90; c.vy = c.vy * keep + uy * 90;
+      c.speed = Math.hypot(c.vx, c.vy);
+      c.spinT = METEOR.spin;
+      c.meteorCool = METEOR.spin + METEOR.immune;
+      // Spin away from the side the blast hit: a hit on the left spins you clockwise.
+      const side = Math.sign(-dx * Math.sin(c.a) + dy * Math.cos(c.a)) || (this.rand() < 0.5 ? -1 : 1);
+      c.spinW = side * (9 + this.rand() * 3);
+      c.hits++;
+      this.events.push({ k: "spun", id: c.id });
+    }
+  }
+
   // ── built-in driver (bots, and cruising after the finish) ─────────────────
   private drive(c: SimCar, dt: number) {
     const P = this.track.pts, n = P.length, i = c.input;
@@ -254,6 +332,7 @@ export class Race {
       i.throttle = c.speed < c.cfg.spd * 0.45;
       return;
     }
+    if (c.spinT > 0) { c.stuckT = 0; return; } // spinning out: nothing to do but wait
     if (c.reverseT > 0) {
       c.reverseT -= dt;
       i.throttle = false; i.brake = true; i.left = diff > 0; i.right = diff < 0;
@@ -300,7 +379,11 @@ export class Race {
 
   // ── physics ───────────────────────────────────────────────────────────────
   private physics(c: SimCar, dt: number) {
-    const i = c.input, cfg = c.cfg, top = cfg.spd * c.topMul;
+    const spun = c.spinT > 0;
+    // Spinning out after a meteor hit: no throttle, brake or steering — the car
+    // twirls (slowing as it unwinds) and slides on with barely any grip.
+    if (spun) { c.a += c.spinW * Math.min(1, c.spinT / METEOR.spin + 0.25) * dt; c.spinT = Math.max(0, c.spinT - dt); }
+    const i = spun ? NO_INPUT : c.input, cfg = c.cfg, top = cfg.spd * c.topMul;
     let fx = Math.cos(c.a), fy = Math.sin(c.a);
     const spd = Math.hypot(c.vx, c.vy);
     const fwd = c.vx * fx + c.vy * fy;
@@ -328,12 +411,14 @@ export class Race {
     let gr = (c.drifting ? cfg.dGrip : cfg.grip) * this.track.grip;
     if (c.onOil) gr *= Math.max(0.05, 1 - 0.75 * c.oilK);
     if (c.offRoad) gr = (c.drifting ? cfg.dGrip : cfg.grip) * Math.max(0.15, 1 - (1 - this.track.theme.terrain.grip) * this.rough(c));
+    if (spun) gr *= 0.08;
     const s2 = Math.hypot(c.vx, c.vy), sgn = c.vx * fx + c.vy * fy < 0 ? -1 : 1;
     const k = Math.min(1, gr * dt);
     c.vx += (fx * s2 * sgn - c.vx) * k;
     c.vy += (fy * s2 * sgn - c.vy) * k;
 
-    if (!i.throttle || c.drifting) { const fr = Math.pow(0.985, dt * 60); c.vx *= fr; c.vy *= fr; }
+    if (spun) { const fr = Math.pow(0.988, dt * 60); c.vx *= fr; c.vy *= fr; }
+    else if (!i.throttle || c.drifting) { const fr = Math.pow(0.985, dt * 60); c.vx *= fr; c.vy *= fr; }
     if (c.onSand) { const fr = Math.pow(1 - Math.min(0.08, 0.03 * cfg.rough * c.sandK), dt * 60); c.vx *= fr; c.vy *= fr; }
     const ns = Math.hypot(c.vx, c.vy);
     if (ns > top) { const t2 = top + (ns - top) * Math.pow(0.15, dt); c.vx *= t2 / ns; c.vy *= t2 / ns; } // overspeed bleeds off smoothly

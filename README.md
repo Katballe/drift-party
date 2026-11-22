@@ -22,6 +22,16 @@ network (Wi-Fi, cellular, different houses).
   Click a bot's car to change it, `×` to remove it. Bots-only races work too.
 - Pick a track for a **single race**, or play the **🏆 Cup**: all five tracks in
   a row, 10 / 8 / 6 / 5 / 4 / 3 / 2 / 1 points per race, most points wins.
+- Pick a **game mode** (works for single races and the cup):
+  - **Classic** — a straight race.
+  - **☄️ Meteor swarm** — every few seconds (at random, a bit more often with a
+    big field) 1–3 meteors come down near random cars, aimed down the road at
+    about where each car will be. A red target ring and a growing shadow give
+    1.6 s of warning. A car in the blast is knocked sideways and **spins out for
+    1.3 s**: no throttle, brake or steering, and it slides on with almost no grip.
+    Then it's safe from meteors for 1 s. The phone vibrates and shows
+    *Meteor hit — spinning out!* Meteors start 3 s after GO, and they leave a
+    scorch mark that fades.
 - Controls: left thumb steers, right thumb **GAS** / **BRAKE**. Brake while
   steering at speed = **drift**. Hold brake when stopped = **reverse**.
 - Host keyboard: Enter start / next race · Esc/P pause · F fullscreen · L lobby.
@@ -87,7 +97,7 @@ free tier.
 | `screen/`, `src/screen/main.ts` | Host page: lobby, HUD, results, keyboard, networking |
 | `src/screen/tracks.ts` | Track definitions: spline centerlines + widths → walls, gates, grid, pads, surfaces, scenery; applies track edits |
 | `src/screen/track-edits.json` | Shipped track tuning (grip, walls, bumps, checkpoints…) — export from the track editor |
-| `src/screen/sim.ts` | Pure race simulation (physics, walls/terrain, gates, boost/slipstream/catch-up, bumps, bot driver) — no DOM |
+| `src/screen/sim.ts` | Pure race simulation (physics, walls/terrain, gates, boost/slipstream/catch-up, bumps, game modes incl. meteor swarm, bot driver) — no DOM |
 | `src/screen/render.ts` | Canvas renderer: hand-drawn tracks & scenery, skid marks, particles, cars, lobby thumbnails |
 | `src/screen/dev.ts` | Track editor + debug overlays — **dev build only** |
 | `src/shared/cars.ts`, `carArt.ts` | Car roster (physics + picker info) and the hand-drawn car art |
@@ -200,7 +210,8 @@ Add `?debug` to the screen URL to expose the game as `window.drift`.
   gates, an 8-car grid, a full 8-car race that never leaves the road, balance of
   all 7 cars, walls, wrong-way, boost pads, slipstream, reverse, bot skill levels
   and overtaking, open tracks (screen-edge wall, terrain, solid scenery, missed
-  checkpoints), speed bumps, track edits
+  checkpoints), speed bumps, track edits, meteor swarm (hits spin you and cut
+  the throttle, meteors land on the road near the cars, and bots still finish)
 - `npm run typecheck` — `tsc --noEmit`
 - `npm run check` — both of the above
 - `node test/relay.test.mjs` — relay integration test (needs `npm run dev` running)

@@ -19,6 +19,7 @@ import {
   ST_FINISHED,
   ST_MISSED,
   ST_OFFROAD,
+  ST_SPUN,
   ST_WRONG_WAY,
   isRoomCode,
   makeClientId,
@@ -216,6 +217,7 @@ class DriftController {
         this.totalLaps = msg.totalLaps;
         if (prev) {
           if (s[2] & ST_FINISHED && !(prev[2] & ST_FINISHED)) this.buzz([100, 60, 180]);
+          else if (s[2] & ST_SPUN && !(prev[2] & ST_SPUN)) this.buzz([120, 40, 120]);
           else if (s[1] > prev[1]) this.buzz([40, 50, 40]);
           else if (s[2] & ST_BOOST && !(prev[2] & ST_BOOST)) this.buzz(35);
           else if (s[3] > prev[3]) this.buzz(30);
@@ -427,6 +429,7 @@ class DriftController {
       const [label, bg] = this.conn !== "connected" ? ["Reconnecting…", "rgba(0,0,0,0.75)"]
         : this.phase === "COUNTDOWN" ? ["GET READY — hold GAS!", "rgba(0,0,0,0.75)"]
         : this.phase === "PAUSED" ? ["PAUSED", "rgba(0,0,0,0.75)"]
+        : f & ST_SPUN ? ["☄️ Meteor hit — spinning out!", "#BF360C"]
         : f & ST_WRONG_WAY ? ["WRONG WAY! Turn around", "#E63946"]
         : f & ST_MISSED ? ["↩ Missed a checkpoint — go back!", "#6A1B9A"]
         : f & ST_BOOST ? ["⚡ BOOST!", "#FF8F00"]

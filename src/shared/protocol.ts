@@ -40,7 +40,7 @@ export const NAME_MAX = 12;
 export const IN_THROTTLE = 1, IN_BRAKE = 2, IN_LEFT = 4, IN_RIGHT = 8;
 
 // Status flag bits carried in PlayerStatus[2]
-export const ST_FINISHED = 1, ST_WRONG_WAY = 2, ST_BOOST = 4, ST_DRAFT = 8, ST_OFFLINE = 16, ST_MISSED = 32, ST_OFFROAD = 64;
+export const ST_FINISHED = 1, ST_WRONG_WAY = 2, ST_BOOST = 4, ST_DRAFT = 8, ST_OFFLINE = 16, ST_MISSED = 32, ST_OFFROAD = 64, ST_SPUN = 128;
 
 // WebSocket close codes. These are terminal: clients must not auto-reconnect.
 export const CLOSE_ROOM_TAKEN = 4001; // a different screen already owns this code
@@ -60,7 +60,7 @@ export interface CupInfo { race: number; of: number; }
 /** Game phase. Broadcast on every change; unicast to a phone when it joins.
  *  `racers` = phone slots in the current race (a phone that joined mid-race
  *  watches); `field` = total cars on the grid, bots included. */
-export interface PhaseMsg { type: "phase"; playerId?: PlayerId; phase: Phase; totalLaps: number; racers: PlayerId[]; field?: number; track: string; cup: CupInfo | null; }
+export interface PhaseMsg { type: "phase"; playerId?: PlayerId; phase: Phase; totalLaps: number; racers: PlayerId[]; field?: number; track: string; cup: CupInfo | null; mode?: string; }
 /** [rank, lap, flags(ST_*), hits] */
 export type PlayerStatus = [number, number, number, number];
 /** Batched per-phone race status (ranks count bots), broadcast ~10 Hz only when it changed. */

@@ -21,6 +21,7 @@ import {
   ST_MISSED,
   ST_OFFLINE,
   ST_OFFROAD,
+  ST_SPUN,
   ST_WRONG_WAY,
   isBot,
   makeClientId,
@@ -38,7 +39,7 @@ import {
 } from "../shared/protocol";
 import type { DevTools } from "./dev";
 import { Renderer, ordinal } from "./render";
-import { Race, STEP, type BotSkill, type Entrant, type SimCar } from "./sim";
+import { GAME_MODES, Race, STEP, type BotSkill, type Entrant, type GameMode, type SimCar } from "./sim";
 import { TRACKS, TRACK_ORDER, type TrackId } from "./tracks";
 
 /** A player is a connected phone. The big screen is never a player. */
@@ -58,6 +59,10 @@ interface Cup {
 
 const LAP_OPTIONS = [2, 3, 5];
 const POINTS = [10, 8, 6, 5, 4, 3, 2, 1];
+const GAME_MODE_INFO: Record<GameMode, { label: string; tag: string }> = {
+  classic: { label: "Classic", tag: "A straight race — first to the flag wins." },
+  meteors: { label: "☄️ Meteor swarm", tag: "Meteors rain down around the cars — watch for the shadows! A hit spins you out and kills your throttle for a moment." },
+};
 const BOT_SKILL_LABELS: Record<BotSkill, string> = { easy: "Easy", normal: "Normal", hard: "Hard" };
 const BOT_NAMES = ["Turbo Tina", "Captain Skid", "Mr. Wobbles", "Rusty", "Zoom Zoom", "Pixel Pete", "Granny Nitro", "Sir Skidalot",
   "Lil' Piston", "Doris Diesel", "Bumper Bob", "Nitro Nora", "Wheelie Wu", "Grip Gremlin", "Professor V8"];
@@ -79,7 +84,7 @@ const store = {
 class DriftScreen {
   phase: Phase = "LOBBY";
   pausedFrom: Phase = "RACING";
-  settings = { track: "sunny" as TrackId, laps: 3, mode: "single" as "single" | "cup", bots: 0, botSkill: "normal" as BotSkill };
+  settings = { track: "sunny" as TrackId, laps: 3, mode: "single" as "single" | "cup", gameMode: "classic" as GameMode, bots: 0, botSkill: "normal" as BotSkill };
   players: (Player | null)[] = Array(MAX_RACERS).fill(null);
   bots: Bot[] = [];
   race: Race | null = null;
@@ -115,6 +120,7 @@ class DriftScreen {
       if (saved.track in TRACKS) this.settings.track = saved.track;
       if (LAP_OPTIONS.includes(saved.laps)) this.settings.laps = saved.laps;
       if (saved.mode === "cup" || saved.mode === "single") this.settings.mode = saved.mode;
+      if (GAME_MODES.includes(saved.gameMode)) this.settings.gameMode = saved.gameMode;
       if (saved.botSkill in BOT_SKILL_LABELS) this.settings.botSkill = saved.botSkill;
       for (let i = 0; i < Math.min(MAX_RACERS, Number(saved.bots) || 0); i++) this.addBot(false);
     }
@@ -244,6 +250,7 @@ class DriftScreen {
       type: "phase", playerId: to, phase: this.phase, totalLaps: this.race?.laps ?? this.settings.laps,
       racers: this.racers(), field: this.race?.cars.length ?? 0, track: TRACKS[this.trackId].name,
       cup: this.cup ? { race: this.cup.index + 1, of: this.cup.tracks.length } : null,
+      mode: this.race?.mode ?? this.settings.gameMode,
     });
   }
 
@@ -323,7 +330,7 @@ class DriftScreen {
       : s.kind === "phone" ? [{ id: s.p.id, name: s.p.name, color: s.color, carType: s.p.carType, ai: false }]
       : [{ id: s.bot.id, name: s.bot.name, color: s.color, carType: s.bot.carType, ai: true, skill: this.settings.botSkill }]);
     if (this.cup) for (const e of field) { this.cup.names[e.id] = e.name; this.cup.colors[e.id] = e.color; this.cup.points[e.id] ??= 0; }
-    this.race = new Race(track, field, this.settings.laps);
+    this.race = new Race(track, field, this.settings.laps, Math.random, this.settings.gameMode);
     this.renderer.setTrack(track);
     this.results = [];
     this.toasts = [];
@@ -450,6 +457,7 @@ class DriftScreen {
         case "hit": this.renderer.sparks(e.x, e.y, e.imp); break;
         case "wall": this.renderer.dust(e.x, e.y, e.imp); break;
         case "bump": if (e.imp > 90) this.renderer.dust(e.x, e.y, e.imp * 0.5); break;
+        case "meteor": this.renderer.meteorBlast(e.x, e.y, e.r); break;
         case "final":
           if (!this.finalLapShown) { this.finalLapShown = true; this.bannerText = "FINAL LAP!"; this.bannerUntil = performance.now() + 2200; }
           break;
@@ -472,7 +480,7 @@ class DriftScreen {
     for (const c of race.cars) {
       if (!c.human) continue; // only phones need their own status
       const flags = (c.finished ? ST_FINISHED : 0) | (c.wrongWay ? ST_WRONG_WAY : 0) | (c.boostT > 0 ? ST_BOOST : 0)
-        | (c.drafting ? ST_DRAFT : 0) | (c.ghost ? ST_OFFLINE : 0) | (c.missed ? ST_MISSED : 0) | (c.offRoad ? ST_OFFROAD : 0);
+        | (c.drafting ? ST_DRAFT : 0) | (c.ghost ? ST_OFFLINE : 0) | (c.missed ? ST_MISSED : 0) | (c.offRoad ? ST_OFFROAD : 0) | (c.spinT > 0 ? ST_SPUN : 0);
       p[c.id as PlayerId] = [rnk.indexOf(c) + 1, race.lapOf(c), flags, c.hits];
     }
     const body = JSON.stringify(p);
@@ -511,6 +519,7 @@ class DriftScreen {
     switch (el.dataset.action!) {
       case "setLaps": this.settings.laps = Number(el.dataset.laps); this.saveSettings(); break;
       case "setMode": this.settings.mode = el.dataset.mode as "single" | "cup"; this.saveSettings(); break;
+      case "setGameMode": this.settings.gameMode = el.dataset.gamemode as GameMode; this.saveSettings(); break;
       case "setTrack":
         this.settings.track = el.dataset.track as TrackId; this.settings.mode = "single"; this.saveSettings();
         this.trackId = this.settings.track;
@@ -675,6 +684,11 @@ class DriftScreen {
             </div>
             <div class="lb-tracks">${tracks}</div>
             <div style="margin-top:8px;font-size:20px;color:#6b6450">${esc(tag)}</div>
+            <div class="lb-row" style="display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;margin-top:12px">
+              <div style="font-size:22px;font-weight:700;color:#333;white-space:nowrap">Game mode</div>
+              <div style="display:flex;gap:6px">${GAME_MODES.map((m) => seg("setGameMode", "gamemode", m, GAME_MODE_INFO[m].label, s.gameMode === m)).join("")}</div>
+              <div style="flex:1;min-width:200px;font-size:18px;color:#6b6450;line-height:1.15">${esc(GAME_MODE_INFO[s.gameMode].tag)}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -704,7 +718,8 @@ class DriftScreen {
     const v = go ? "GO!" : String(Math.max(1, this.countShown));
     const col = go ? "#4CAF50" : "#FFD600";
     const t = TRACKS[this.trackId];
-    const sub = this.cup ? `Race ${this.cup.index + 1} of ${this.cup.tracks.length} · ${t.name} · ${this.race?.laps} laps` : `${t.name} · ${this.race?.laps} laps`;
+    const meteors = this.race?.mode === "meteors" ? " · ☄️ Meteor swarm" : "";
+    const sub = (this.cup ? `Race ${this.cup.index + 1} of ${this.cup.tracks.length} · ${t.name} · ${this.race?.laps} laps` : `${t.name} · ${this.race?.laps} laps`) + meteors;
     return `<div style="position:absolute;inset:0;background:${go ? "transparent" : "rgba(0,0,0,0.45)"};display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:20;pointer-events:none;padding:0 16px;text-align:center">
       <div style="font-size:210px;font-weight:700;color:${col};text-shadow:0 0 60px ${col}, 0 6px 0 rgba(0,0,0,0.4);line-height:1;animation:popIn 0.45s ease">${v}</div>
       ${go ? "" : `<div style="font-size:30px;color:#fff;margin-top:8px">${esc(sub)}</div><div style="font-size:22px;color:rgba(255,255,255,0.65)">${esc(t.tag)}</div>`}
@@ -748,7 +763,7 @@ class DriftScreen {
         <span style="max-width:${compact ? "4.6em" : "6.5em"};overflow:hidden;text-overflow:ellipsis">${c.ghost ? "📵 " : c.human ? "" : "🤖"}${esc(c.name)}</span>${c.finished && !compact ? `<span style="color:#FFD600">🏁 ${fmtT(c.finishTime!)}</span>` : ""}</div>`).join("");
     return `<div style="position:absolute;top:0;left:0;right:0;height:3.2em;background:rgba(10,16,6,0.82);display:flex;align-items:center;gap:1em;padding:0 .8em;color:#fff;font-size:1em;z-index:10">
         <div style="line-height:1;white-space:nowrap"><div style="font-size:1.25em;font-weight:700">${esc(t.name)}</div>
-          <div style="font-size:.8em;color:rgba(255,255,255,0.55)">${this.cup ? `🏆 Race ${this.cup.index + 1}/${this.cup.tracks.length}` : "Single race"}</div></div>
+          <div style="font-size:.8em;color:rgba(255,255,255,0.55)">${this.cup ? `🏆 Race ${this.cup.index + 1}/${this.cup.tracks.length}` : "Single race"}${race.mode === "meteors" ? " · ☄️ Meteors" : ""}</div></div>
         <div style="text-align:center;line-height:1;white-space:nowrap;padding:0 .6em;border-left:1px solid rgba(255,255,255,0.15);border-right:1px solid rgba(255,255,255,0.15)">
           <div style="font-size:.7em;color:rgba(255,255,255,0.5);letter-spacing:.1em;font-family:sans-serif">LAP</div>
           <div style="font-size:1.6em;font-weight:700;color:${leaderLap === race.laps ? "#FF5252" : "#fff"}">${leaderLap}/${race.laps}</div></div>
@@ -798,7 +813,7 @@ class DriftScreen {
     return `<div style="position:absolute;inset:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px">
       <div style="background:#f0ede4;border-radius:20px;padding:${big ? "18px 30px" : "26px 36px"};width:min(${big ? 760 : 700}px,100%);max-height:100%;overflow:auto;box-shadow:0 10px 50px rgba(0,0,0,0.55)">
         <div style="font-size:48px;font-weight:700;color:#1a2a0a;text-align:center;line-height:1">${title}</div>
-        <div style="font-size:17px;color:#999;text-align:center;margin:6px 0 18px">${esc(t.name)} · ${this.race?.laps} laps</div>
+        <div style="font-size:17px;color:#999;text-align:center;margin:6px 0 18px">${esc(t.name)} · ${this.race?.laps} laps${this.race?.mode === "meteors" ? " · ☄️ Meteor swarm" : ""}</div>
         ${rows}${standings}
         <div style="display:flex;flex-wrap:wrap;gap:11px;margin-top:18px;justify-content:center">${buttons}</div>
       </div>

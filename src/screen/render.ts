@@ -5,7 +5,7 @@
 
 import { drawCarArt } from "../shared/carArt";
 import { INK, hashStr, inkShape, makePaper, paintGrass, rng, sampleEllipse, sampleRoundRect } from "../shared/sketch";
-import { normA, type Race, type SimCar } from "./sim";
+import { normA, type Meteor, type Race, type SimCar } from "./sim";
 import { BOUNDS, type DecoKind, type Gate, type TrackDef } from "./tracks";
 
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; r: number; color: string; grow: number; }
@@ -36,6 +36,7 @@ export class Renderer {
   private track: TrackDef | null = null;
   private particles: Particle[] = [];
   private wheels = new Map<string, Wheels>();
+  private flashes: { x: number; y: number; r: number; life: number }[] = [];
 
   constructor(private canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext("2d")!;
@@ -72,6 +73,7 @@ export class Renderer {
 
   clearEffects() {
     this.particles = [];
+    this.flashes = [];
     this.wheels.clear();
     if (this.skidCtx) { this.skidCtx.save(); this.skidCtx.setTransform(1, 0, 0, 1, 0, 0); this.skidCtx.clearRect(0, 0, this.skid!.width, this.skid!.height); this.skidCtx.restore(); }
   }
@@ -90,6 +92,25 @@ export class Renderer {
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2, v = 20 + Math.random() * 60;
       this.emit({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 0.5 + Math.random() * 0.4, r: 4 + Math.random() * 4, color: "rgba(214,196,150,", grow: 14 });
+    }
+  }
+
+  /** Meteor impact: a fireball, flying rock, a dust cloud and a scorch mark left on the track. */
+  meteorBlast(x: number, y: number, r: number) {
+    for (let i = 0; i < 26; i++) {
+      const a = Math.random() * Math.PI * 2, v = 80 + Math.random() * 260;
+      this.emit({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 0.3 + Math.random() * 0.35, r: 2 + Math.random() * 2.5, color: ["#FFD600", "#FF8A00", "#FF3D00", "#5d4037"][i % 4], grow: 0 });
+    }
+    for (let i = 0; i < 12; i++) {
+      const a = Math.random() * Math.PI * 2, v = 30 + Math.random() * 90;
+      this.emit({ x: x + Math.cos(a) * r * 0.3, y: y + Math.sin(a) * r * 0.3, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0, max: 0.8 + Math.random() * 0.6, r: 8 + Math.random() * 8, color: "rgba(120,104,90,", grow: 26 });
+    }
+    this.flashes.push({ x, y, r, life: 0 });
+    const k = this.skidCtx;
+    if (k) {
+      const g = k.createRadialGradient(x, y, 0, x, y, r * 0.9);
+      g.addColorStop(0, "rgba(30,22,18,0.6)"); g.addColorStop(0.6, "rgba(30,22,18,0.35)"); g.addColorStop(1, "rgba(30,22,18,0)");
+      k.fillStyle = g; k.beginPath(); k.arc(x, y, r * 0.9, 0, Math.PI * 2); k.fill();
     }
   }
 
@@ -113,9 +134,12 @@ export class Renderer {
       this.updateParticles(dt, false);
       // A car that skipped a checkpoint sees that checkpoint light up in its colour.
       for (const c of race.cars) if (c.missed) drawGateLine(ctx, race.track.gates[c.gatesPassed % race.track.gates.length], c.color, race.time);
+      for (const m of race.meteors) drawMeteorShadow(ctx, m, race.time);
       const cars = race.cars.map((c) => ({ c, ...this.lerp(c, alpha) })).sort((a, b) => a.y - b.y);
       for (const k of cars) this.drawCar(k.c, k.x, k.y, k.a, race.time);
       this.updateParticles(0, true);
+      this.drawFlashes(dt);
+      for (const m of race.meteors) drawMeteorRock(ctx, m);
       for (const k of cars) this.drawLabels(race, k.c, k.x, k.y);
     }
     if (overlay) { ctx.setTransform(s, 0, 0, s, 0, 0); overlay(ctx); }
@@ -208,6 +232,30 @@ export class Renderer {
     }
     drawCarArt(ctx, type, car.color, w, h, seed, car.input.brake && !car.finished && !car.ghost);
     ctx.restore();
+    // spun out by a meteor: little stars circling over the car
+    if (car.spinT > 0 && !car.ghost) {
+      ctx.save(); ctx.fillStyle = "#FFD600"; ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+      for (let k = 0; k < 3; k++) {
+        const a = time * 7 + (k * Math.PI * 2) / 3, sx = x + Math.cos(a) * w * 0.55, sy = y - h * 0.2 + Math.sin(a) * h * 0.45;
+        drawStar(ctx, sx, sy, 5);
+      }
+      ctx.restore();
+    }
+  }
+
+  /** The bright flash of a landing meteor (a quick expanding ring). */
+  private drawFlashes(dt: number) {
+    const ctx = this.ctx;
+    for (const f of this.flashes) {
+      f.life += dt;
+      const p = Math.min(1, f.life / 0.35);
+      ctx.save();
+      ctx.globalAlpha = 1 - p;
+      ctx.fillStyle = "rgba(255,214,0,0.55)"; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.6 + 0.4 * p), 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#FF8A00"; ctx.lineWidth = 5 * (1 - p) + 1; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * (0.7 + 0.9 * p), 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+    this.flashes = this.flashes.filter((f) => f.life < 0.35);
   }
 
   private drawLabels(race: Race, car: SimCar, x: number, y: number) {
@@ -320,6 +368,44 @@ export function drawTrack(ctx: CanvasRenderingContext2D, t: TrackDef, quick: boo
     drawCheckpoint(ctx, t, g);
   }
   drawChecker(ctx, t.pts[0], 11, 42); // start / finish line
+}
+
+/** Where a meteor will land: a darkening shadow and a pulsing red target ring. */
+function drawMeteorShadow(ctx: CanvasRenderingContext2D, m: Meteor, time: number) {
+  const p = 1 - m.t / m.fall; // 0 → 1 as it comes down
+  ctx.save();
+  ctx.fillStyle = `rgba(0,0,0,${(0.12 + 0.3 * p).toFixed(3)})`;
+  ctx.beginPath(); ctx.ellipse(m.x, m.y, m.r * (0.35 + 0.6 * p), m.r * (0.3 + 0.5 * p), 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#ff3b30"; ctx.lineWidth = 3; ctx.setLineDash([9, 7]); ctx.lineDashOffset = -time * 40;
+  ctx.globalAlpha = 0.55 + 0.45 * Math.abs(Math.sin(time * (6 + 10 * p)));
+  ctx.beginPath(); ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]); ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(m.x - 9, m.y); ctx.lineTo(m.x + 9, m.y); ctx.moveTo(m.x, m.y - 9); ctx.lineTo(m.x, m.y + 9); ctx.stroke();
+  ctx.restore();
+}
+
+/** The meteor itself, streaking down from above with a fiery tail. */
+function drawMeteorRock(ctx: CanvasRenderingContext2D, m: Meteor) {
+  const q = m.t / m.fall; // 1 → 0 as it comes down
+  const dx = m.x > 800 ? -0.3 : 0.3, dy = -0.954; // falls in steeply, leaning in from the nearer side of the screen
+  const dist = Math.min(420, m.y + 40) * q * q;
+  const x = m.x + dx * dist, y = m.y + dy * dist, rr = 11 + m.r * 0.16;
+  ctx.save();
+  const tail = 70 + 50 * q, tx = x + dx * tail, ty = y + dy * tail;
+  const g = ctx.createLinearGradient(x, y, tx, ty);
+  g.addColorStop(0, "rgba(255,138,0,0.95)"); g.addColorStop(0.4, "rgba(255,214,0,0.6)"); g.addColorStop(1, "rgba(255,214,0,0)");
+  ctx.fillStyle = g;
+  const nx = -dy, ny = dx; // tail width
+  ctx.beginPath(); ctx.moveTo(x + nx * rr, y + ny * rr); ctx.lineTo(tx, ty); ctx.lineTo(x - nx * rr, y - ny * rr); ctx.closePath(); ctx.fill();
+  inkShape(ctx, sampleEllipse(x, y, rr, rr * 0.9, 9), 2, hashStr(`m${m.x | 0}`), "#6d4c41", INK, 2);
+  ctx.fillStyle = "rgba(255,183,77,0.8)"; ctx.beginPath(); ctx.arc(x - rr * 0.25, y + rr * 0.25, rr * 0.35, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number) {
+  ctx.beginPath();
+  for (let k = 0; k < 10; k++) { const a = -Math.PI / 2 + (k * Math.PI) / 5, d = k % 2 ? r * 0.45 : r; ctx.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d); }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
 }
 
 /** Open tracks: a tyre-and-plank barrier along the screen edge — the one wall left. */

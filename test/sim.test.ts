@@ -1,8 +1,9 @@
 // Headless checks for the tracks and race simulation. Run with `npm test`.
 import { mkdirSync, writeFileSync } from "node:fs";
-import { CAR_CFGS, Race, STEP, carOverlap, hull, type BotSkill, type Entrant } from "../src/screen/sim";
+import { CAR_CFGS, METEOR, Race, STEP, carOverlap, hull, type BotSkill, type Entrant } from "../src/screen/sim";
 import { BOUNDS, TRACKS, TRACK_ORDER, applyTrackEdits, buildTrack, edgeGap, lapFraction, lineIsClean, onRoad, type TrackDef } from "../src/screen/tracks";
 import { carStats } from "../src/shared/cars";
+import { rng } from "../src/shared/sketch";
 import { CAR_TYPES, MAX_RACERS, type CarType, type RacerId } from "../src/shared/protocol";
 
 let failures = 0;
@@ -430,6 +431,55 @@ console.log("\nPer-item attributes");
     "every original item knows which original it is (so the editor can reset it)");
   ok(buildTrack("snake", { sand: [{ x: 700, y: 500, r: 50, orig: 2 }, { x: 800, y: 500, r: 50 }] }).sand.map((c) => c.orig).join() === "2,",
     "edited items keep that link; added ones have none");
+}
+
+console.log("\nMeteor swarm");
+{
+  // A meteor landing on a car spins it and kills its throttle for a while.
+  const t = TRACKS.sunny;
+  const race = new Race(t, entrants(["normal", "normal"], false), 3, fixed, "meteors"), c = race.cars[0], o = race.cars[1];
+  race.time = 5;
+  const p = t.pts[30];
+  Object.assign(c, { x: p.x, y: p.y, px: p.x, py: p.y, a: Math.atan2(p.ty, p.tx), vx: p.tx * 250, vy: p.ty * 250, idx: 30 });
+  c.input = { throttle: true, brake: false, left: false, right: false };
+  race.meteors.push({ x: c.x + p.nx * 15, y: c.y + p.ny * 15, r: METEOR.r, t: 0.001, fall: 1, target: c.id });
+  race.step(STEP);
+  ok(c.spinT > 0 && race.events.some((e) => e.k === "spun" && e.id === c.id) && race.events.some((e) => e.k === "meteor"), "a meteor landing on a car spins it out");
+  ok(o.spinT === 0, "cars outside the blast are untouched");
+  let turned = 0, last = c.a, sped = false;
+  for (let k = 0; k < 100; k++) { const s0 = c.speed; race.step(STEP); turned += Math.abs(c.a - last); last = c.a; if (c.speed > s0 + 0.5) sped = true; }
+  ok(turned > Math.PI, `the car spins round (${(turned / Math.PI).toFixed(1)}π in 0.8 s)`);
+  ok(!sped && c.speed < 150, `no acceleration while spinning, even on full throttle (250 → ${c.speed.toFixed(0)} px/s)`);
+  race.events.length = 0;
+  race.meteors.push({ x: c.x, y: c.y, r: METEOR.r, t: 0.001, fall: 1, target: c.id });
+  race.step(STEP);
+  ok(!race.events.some((e) => e.k === "spun"), "a spinning car can't be hit again straight away");
+  while (c.spinT > 0) race.step(STEP);
+  const s1 = c.speed;
+  for (let k = 0; k < 60; k++) race.step(STEP);
+  ok(c.speed > s1 + 20, "after the spin the throttle works again");
+
+  // Meteors keep coming during a race, land near the cars, and the bots still finish.
+  for (const id of ["sunny", "snake"] as const) {
+    const r = new Race(TRACKS[id], entrants(FULL), 2, rng(7), "meteors");
+    let meteors = 0, near = 0, road = 0, nan = false;
+    const spun = new Set<RacerId>();
+    while (!r.isOver() && r.time < 240) {
+      r.step(STEP);
+      for (const e of r.events) {
+        if (e.k === "meteor") { meteors++; if (onRoad(r.track, e.x, e.y, -e.r)) road++; if (r.cars.some((c) => !c.finished && Math.hypot(e.x - c.x, e.y - c.y) < 250)) near++; }
+        if (e.k === "spun") spun.add(e.id);
+      }
+      r.events.length = 0;
+      if (r.cars.some((c) => !Number.isFinite(c.x))) nan = true;
+    }
+    ok(meteors > 10 && near >= meteors * 0.8 && spun.size >= 2, `${TRACKS[id].name}: ${meteors} meteors, ${near} land near a car, ${spun.size} cars spun out`);
+    ok(road >= meteors * 0.9, `${TRACKS[id].name}: meteors land on (or touching) the road (${road}/${meteors})`);
+    ok(!nan && r.cars.every((c) => c.finished), `${TRACKS[id].name}: all 8 bots still finish a meteor race (${r.time.toFixed(0)} s)`);
+  }
+  const quiet = new Race(TRACKS.sunny, entrants(FULL), 1, fixed);
+  run(quiet, 30);
+  ok(quiet.meteors.length === 0, "classic mode has no meteors");
 }
 
 console.log(failures ? `\n${failures} check(s) FAILED` : "\nAll checks passed");
